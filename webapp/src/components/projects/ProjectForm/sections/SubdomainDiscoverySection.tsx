@@ -132,7 +132,8 @@ export function SubdomainDiscoverySection({ data, updateField, onRun }: Subdomai
               <div className={styles.toggleRowCompactInfo}>
                 <span className={styles.toggleLabelLg}>crt.sh</span>
                 <p className={styles.toggleDescription}>
-                  Certificate transparency logs - discovers subdomains from SSL/TLS certificates
+                  Certificate transparency logs - discovers subdomains from SSL/TLS certificates.
+                  When crt.sh gives no answer, the same lookup is sent to crt.name instead.
                 </p>
               </div>
               {data.crtshEnabled && (

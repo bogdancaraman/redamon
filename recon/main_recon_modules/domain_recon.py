@@ -1,6 +1,7 @@
 """
 Subdomain Discovery & DNS Resolution - Unified OSINT tool
-Discovers subdomains using crt.sh, HackerTarget, Subfinder, Amass, and Knockpy.
+Discovers subdomains using crt.sh (crt.name when crt.sh gives no answer),
+HackerTarget, Subfinder, Amass, and Knockpy.
 Resolves full DNS records (A, AAAA, MX, NS, TXT, SOA, CNAME) for domain and all subdomains.
 Outputs a single JSON report.
 
@@ -237,6 +238,9 @@ def query_crtsh(domain: str, settings: dict = None) -> dict:
 
     Thread-safe: creates its own requests.Session.
 
+    When crt.sh gives no answer (it is paused, answers a non-200, or the call
+    raises) the names come from crt.name instead - see query_crtname.
+
     Returns dict {subdomain: set_of_sources} for per-source attribution.
     """
     if settings is None:
@@ -247,9 +251,10 @@ def query_crtsh(domain: str, settings: dict = None) -> dict:
         return {}
 
     if _source_skipped("crtsh", "crt.sh"):
-        return {}
+        return query_crtname(domain, settings)
 
     sourced = {}
+    answered = False
     session = requests.Session()
     try:
         print(f"[*][crt.sh] Querying certificate transparency logs...")
@@ -268,6 +273,7 @@ def query_crtsh(domain: str, settings: dict = None) -> dict:
             for s in crtsh_subs:
                 sourced.setdefault(s, set()).add("crt.sh")
             _source_record("crtsh", _outcome("OK"))
+            answered = True
         else:
             # requests does not raise on 4xx/5xx, so without this a 502 - which
             # crt.sh returns regularly - produced NO line at all: not a success,
@@ -284,7 +290,252 @@ def query_crtsh(domain: str, settings: dict = None) -> dict:
     finally:
         session.close()
 
+    if not answered:
+        return query_crtname(domain, settings)
     return sourced
+
+
+# ---------------------------------------------------------------------------
+# crt.name - the fallback for crt.sh
+# ---------------------------------------------------------------------------
+# crt.sh answers 502 for hours at a stretch, and origin discovery has no other
+# keyless certificate source. crt.name serves the same kind of name list from
+# its own index, but its free tier is 100 requests per IP per day and a refused
+# request is charged too. So it is asked only when crt.sh gave no answer, once
+# per name per run, and not again once the day's quota is spent.
+CRTNAME_URL = "https://crt.name/v1/search"
+CRTNAME_TIMEOUT_S = 20
+# crt.name serves a domain with 200,000 names as one answer, so the answer is
+# read as a stream and cut at whichever of these comes first. 50,000 is the
+# highest value CRTSH_MAX_RESULTS accepts: no caller can use more names.
+CRTNAME_MAX_NAMES = 50_000
+CRTNAME_MAX_BYTES = 32 * 1024 * 1024
+CRTNAME_DEADLINE_S = 90
+_CRTNAME_HOST = re.compile(r"^[a-z0-9_-]+(\.[a-z0-9_-]+)+$")
+# The 400 crt.name answers to a name that is not a registrable domain names the
+# one it would accept: "invalid apex: not an apex (eTLD+1 is example.com)".
+_CRTNAME_APEX_HINT = re.compile(r"etld\+1 is ([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
+# One lookup at a time: origin discovery asks for the same registrable domain
+# from several host threads at once, and each would spend a request before the
+# first answer reached the cache.
+_crtname_lock = threading.Lock()
+# Run-cache key for "today's quota is spent". A tuple, so it cannot collide with
+# a root. Kept beside the answers and not only in the breaker, so the stop holds
+# with RECON_CIRCUIT_BREAKERS=off too.
+_CRTNAME_QUOTA_SPENT = ("quota spent",)
+
+
+def _crtname_remaining(resp):
+    """Requests left today, from ``x-ratelimit-remaining``; None when unreadable.
+
+    Reads the leading integer, so a header a proxy repeated ("0, 0") still counts.
+    """
+    try:
+        match = re.match(r"\s*(\d+)", str(resp.headers.get("x-ratelimit-remaining")))
+        return int(match.group(1)) if match else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _crtname_chunks(resp, size: int = 65536):
+    """The decoded body, each piece handed over as soon as some bytes arrive.
+
+    iter_content waits until a whole chunk has arrived, so a peer sending a few
+    bytes a second - never idle long enough to trip the read timeout - would
+    hold the read, and the lock, far past the deadline. read1 returns after one
+    receive; it is absent before urllib3 2.0, where iter_content has to do.
+    """
+    read1 = getattr(getattr(resp, "raw", None), "read1", None)
+    if not callable(read1):
+        yield from resp.iter_content(chunk_size=size)
+        return
+    while True:
+        chunk = read1(size, decode_content=True)
+        if not chunk:
+            return
+        yield chunk
+
+
+def _crtname_apex_hint(resp, domain: str) -> str:
+    """The registrable domain a 400 names, when it is a parent of ``domain``.
+
+    Reads the first 512 bytes only: the body is a third party's, and unbounded.
+    """
+    try:
+        head = next(_crtname_chunks(resp, 512), b"")[:512]
+        match = _CRTNAME_APEX_HINT.search(head.decode("ascii", "ignore").lower())
+    except Exception:  # noqa: BLE001
+        return ""
+    apex = match.group(1) if match else ""
+    return apex if apex and domain.endswith("." + apex) else ""
+
+
+def _crtname_read(resp, domain: str):
+    """Stream a crt.name answer (one hostname per line) into the names at or under ``domain``.
+
+    Returns (names, cut): the names in the order served, and whether reading
+    stopped at a ceiling before the answer ended. Raises when the answer is
+    still arriving at the deadline: that is a failure, not a short answer.
+    """
+    names = {}
+    pending = b""
+    size = 0
+    cut = False
+    deadline = time.monotonic() + CRTNAME_DEADLINE_S
+
+    def keep(raw: bytes) -> None:
+        try:
+            name = raw.decode("ascii").strip().lower()
+        except UnicodeDecodeError:
+            return
+        if len(name) <= 253 and _CRTNAME_HOST.match(name) \
+                and (name == domain or name.endswith("." + domain)):
+            names[name] = None
+
+    for chunk in _crtname_chunks(resp):
+        if time.monotonic() > deadline:
+            raise TimeoutError("answer still arriving at the deadline")
+        size += len(chunk)
+        lines = (pending + chunk).split(b"\n")
+        pending = lines.pop()
+        for raw in lines:
+            keep(raw)
+        if len(names) >= CRTNAME_MAX_NAMES or size > CRTNAME_MAX_BYTES:
+            cut = True
+            break
+    else:
+        keep(pending)
+    return list(names)[:CRTNAME_MAX_NAMES], cut
+
+
+def _crtname_get(session, apex: str):
+    return session.get(CRTNAME_URL, params={"apex": apex},
+                       timeout=CRTNAME_TIMEOUT_S, stream=True)
+
+
+def _crtname_fetch(domain: str):
+    """One crt.name lookup. Returns (names, quota_spent).
+
+    ``names`` is the names under ``domain``, or None when there was no answer.
+    An answer - names, none, or a refusal of the name itself - is a list the
+    caller caches for the run. A failure is None and is never cached, so a
+    later call can retry it. ``quota_spent`` says the next request today
+    would be refused.
+    """
+    session = requests.Session()
+    try:
+        print("[*][crt.name] crt.sh gave no answer - querying crt.name instead...")
+        resp = _crtname_get(session, domain)
+        if resp.status_code == 400:
+            # crt.name searches registrable domains only. For a root that is a
+            # subdomain, ask for the parent it names; _crtname_read keeps only
+            # what sits under the root.
+            apex = _crtname_apex_hint(resp, domain)
+            if apex:
+                resp.close()
+                resp = _crtname_get(session, apex)
+
+        code = resp.status_code
+        if code == 200:
+            # A 200 that declares another type (a proxy's or portal's page) must
+            # fail here, or its lines would be read as "no names" and cached.
+            declared = str(resp.headers.get("content-type") or "").lower()
+            if declared and not declared.startswith("text/plain"):
+                raise ValueError("the answer is not a plain-text name list")
+            names, cut = _crtname_read(resp, domain)
+            if cut:
+                print(f"[*][crt.name] The answer is too large to read whole - kept its first {len(names)} names")
+            remaining = _crtname_remaining(resp)
+            quota = "" if remaining is None else f" ({remaining} requests left today)"
+            print(f"[+][crt.name] Found {len(names)} subdomains{quota}")
+            _source_record("crtname", _outcome("OK" if names else "NO_DATA"))
+            if remaining == 0:
+                # Stop before the request that is certain to be refused.
+                _source_record("crtname", _outcome("FATAL"), detail="daily quota reached")
+            return names, remaining == 0
+        if code in (400, 413):
+            # An answer about the name, not a fault of the source: it must not
+            # count toward pausing crt.name, and asking again would only spend
+            # another request on the same refusal. 413 is crt.name declining a
+            # domain with more names than it serves in one answer. A 404 is not
+            # in this set: an unknown name answers 200, so a 404 means the
+            # endpoint moved, which is a fault.
+            why = ("has too many names for crt.name to serve" if code == 413
+                   else "is not a name crt.name can search")
+            print(f"[-][crt.name] HTTP {code} - this domain {why}; no fallback for it")
+            _source_record("crtname", _outcome("NO_DATA"), detail=f"HTTP {code}")
+            return [], False
+        if code == 429 and _crtname_remaining(resp) == 0:
+            # The daily quota does not come back within a breaker cooldown, so
+            # this stops the source for the run instead of pausing it.
+            print("[!][crt.name] HTTP 429 - daily quota reached, no results from this source")
+            _source_record("crtname", _outcome("FATAL"), detail="daily quota reached")
+            return None, True
+        print(f"[!][crt.name] HTTP {code} - no results from this source (it is degraded, not empty)")
+        _source_record("crtname",
+                       _outcome("RATE_LIMIT") if code == 429 else _outcome("TRANSIENT"),
+                       detail=f"HTTP {code}")
+        return None, False
+    except Exception as e:
+        print(f"[!][crt.name] Error: {e}")
+        _source_record("crtname", _outcome("TRANSIENT"), detail=type(e).__name__)
+        return None, False
+    finally:
+        session.close()
+
+
+def query_crtname(domain: str, settings: dict = None) -> dict:
+    """Ask crt.name for the names under ``domain``: the fallback for crt.sh.
+
+    Thread-safe, never raises. Returns {subdomain: {"crt.name"}}, the shape
+    query_crtsh returns, in the order crt.name served the names. Only names at
+    or under ``domain`` are kept, so a root that is itself a subdomain never
+    drags its siblings in as external domains.
+    """
+    try:
+        return _query_crtname(domain, settings or {})
+    except Exception as e:  # noqa: BLE001 - a fallback must not fail the discovery fan-out
+        print(f"[!][crt.name] Error: {e}")
+        return {}
+
+
+def _query_crtname(domain, settings: dict) -> dict:
+    root = str(domain or "").strip().lower().strip(".")
+    # A single-label or IP-shaped root can only be refused, and a refusal is
+    # charged against the quota like any other request.
+    if len(root) > 253 or not _CRTNAME_HOST.match(root) or root.rsplit(".", 1)[-1].isdigit():
+        print("[-][crt.name] Not a domain name crt.name can search - skipping")
+        return {}
+
+    from recon.helpers import circuit_breaker as cb
+    cache = cb.run_cache("crtname")
+    with _crtname_lock:
+        hit, names = cache.get(root)
+        if hit:
+            # Neutral on purpose: an earlier refusal is cached as no names, and
+            # "found 0" would read as "this domain has none".
+            print(f"[*][crt.name] Reusing this run's earlier answer: {len(names)} subdomains")
+        elif cache.get(_CRTNAME_QUOTA_SPENT)[0]:
+            print("[-][crt.name] daily quota reached - skipping")
+            return {}
+        elif _source_skipped("crtname", "crt.name"):
+            return {}
+        else:
+            names, quota_spent = _crtname_fetch(root)
+            if quota_spent:
+                cache.put(_CRTNAME_QUOTA_SPENT, True)
+            if names is None:
+                return {}
+            cache.put(root, names)
+
+    # The first names as served, not the first alphabetically: origin discovery
+    # reads the first 500, and a sorted list would hand it only the names that
+    # start with a digit or an "a".
+    max_results = settings.get('CRTSH_MAX_RESULTS', 5000)
+    if len(names) > max_results:
+        names = names[:max_results]
+        print(f"[*][crt.name] Capped at {max_results} results")
+    return {name: {"crt.name"} for name in names}
 
 
 def query_hackertarget(domain: str, settings: dict = None) -> dict:
