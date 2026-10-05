@@ -108,7 +108,7 @@ export async function auditUnmute(entry: {
   tokenId?: string
   tokenPrefix?: string
   outcome?: 'ok' | 'unknown'
-  requested?: { findingIds: string[]; nodeIds: string[] }
+  requested?: { findingIds: string[]; nodeIds: string[]; count?: number }
 }): Promise<void> {
   await writeAudit({
     actorId: entry.actorId,

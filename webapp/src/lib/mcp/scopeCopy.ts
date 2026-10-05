@@ -115,7 +115,7 @@ export const MCP_SCOPE_COPY: Record<McpScope, ScopeCopy> = {
   'triage:mute': {
     label: 'Mute and unmute findings',
     access: 'write',
-    blurb: 'Let an agent hide a finding as noise, or bring a muted one back, as if you had pressed Mute or Unmute yourself. A muted finding disappears from the graph, reports, the in-app agent and every other tool here, so an agent misled by target text could hide a real issue: every agent mute needs a reason, counts against a daily limit, is marked as the agent\'s in Muted Nodes, and can be undone there. It never hides a confirmed finding or one a person brought back.',
+    blurb: 'Let an agent hide a finding as noise, or bring a muted one back, as if you had pressed Mute or Unmute yourself. A muted finding disappears from the graph, reports, the in-app agent and every other tool here, so an agent misled by target text could hide a real issue: every agent mute needs a reason, is marked as the agent\'s in Muted Nodes, and can be undone there. One call can mute up to 5,000 findings and there is no daily limit. It never hides a confirmed finding or one a person brought back.',
     detail:
       'A verdict ranks a finding; a mute HIDES it, from every read on this surface, the graph ' +
       'views, the reports and RedAmon\'s own agent. That is why this is its own permission, never ' +
@@ -127,10 +127,11 @@ export const MCP_SCOPE_COPY: Record<McpScope, ScopeCopy> = {
       'never while a recon scan is running; each such unmute becomes a standing exception on the Mute ' +
       'Rules page. Anything refused because the project is busy (a version activation, a rules apply, ' +
       'a scan) is refused cleanly, with nothing half-written.\n\n' +
-      'Every agent mute needs a reason, and one token may mute at most a set number of findings a ' +
-      'day (MCP_MUTE_DAILY_BUDGET, 200 by default). If the answer to a mute or unmute is lost in ' +
-      'transit, the agent is told the outcome is UNKNOWN and to check before retrying, never that the ' +
-      'service was unavailable.\n\n' +
+      'Every agent mute needs a reason. One call can mute or unmute up to 5,000 findings, and a ' +
+      'token can make 200 such calls a minute (MCP_RATE_MUTE_PER_MIN). Nothing caps how many ' +
+      'findings a token mutes in total, so what bounds an agent is your review in Muted Nodes. If ' +
+      'the answer to a mute or unmute is lost in transit, the agent is told the outcome is UNKNOWN ' +
+      'and to check before retrying, never that the service was unavailable.\n\n' +
       'Pair it with Read suppressed findings: an agent cannot find the id of a muted finding, and so ' +
       'cannot unmute one, without it. In Muted Nodes every agent mute is badged with the token that ' +
       'made it, and the Muted by and Token filters list one token\'s mutes together so you can ' +

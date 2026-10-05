@@ -141,7 +141,7 @@ rm -rf "$T"
 echo
 echo "== hop 4: compose passes it to the webapp (which has NO env_file) =="
 for k in MCP_SERVER_ENABLED MCP_TOKEN_RETENTION_DAYS MCP_LLM_DAILY_BUDGET \
-         MCP_RATE_READ_PER_MIN MCP_RATE_QUERY_PER_MIN MCP_RATE_WRITE_PER_MIN \
+         MCP_RATE_READ_PER_MIN MCP_RATE_QUERY_PER_MIN MCP_RATE_WRITE_PER_MIN MCP_RATE_MUTE_PER_MIN \
          MCP_RATE_START_PER_WINDOW MCP_RATE_START_WINDOW_MS MCP_ALLOWED_ORIGIN; do
   grep -qE "^ +${k}: \\\$\{${k}" "$COMPOSE" && ok "$k reaches the webapp" \
     || bad "$k reaches the webapp" "absent from the environment block" "present"

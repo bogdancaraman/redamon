@@ -113,13 +113,13 @@ _MUTED_VIA = (f"CASE WHEN {_RULE_MUTED} THEN 'rule' "
 #: The host a finding is about, from the fields the writers actually use.
 _HOST = "coalesce(n.triage_host, n.host, n.hostname, n.target_hostname, '')"
 
-#: Upper bound on one batch unmute. The Muted Nodes table selects at most a page
-#: (50), so this only bounds a hand-crafted request.
-MAX_UNMUTE_BATCH = 500
+#: Upper bound on one batch unmute, sized for an MCP unmute. The agent API
+#: holds the Muted Nodes table, which selects at most a page (50), to less.
+MAX_UNMUTE_BATCH = 5000
 
 #: Upper bound on one delegated (MCP) mute. The webapp caps it too; this is the
 #: bound a master-key caller that skipped the webapp still hits.
-MAX_DELEGATED_MUTE_BATCH = 25
+MAX_DELEGATED_MUTE_BATCH = 5000
 
 #: Upper bound on one Multi mute write. The modal chunks a larger selection
 #: into several calls under the same batch id.
@@ -527,18 +527,29 @@ class TriageMixin:
         if not mute_keys:
             return {"items": items, "not_found": not_found}
 
+        # One pass over the tenant's findings with IN, not a pass per key: a
+        # call names thousands, and a pass per key over eight labels takes
+        # minutes at that size. The exemptions are "Label|key" strings for the
+        # same reason: one set lookup per node, where a project holds as many
+        # exemptions as it has unmuted findings. A label never contains "|".
+        # Locked in key order, as the Multi mute locks, so the two cannot
+        # deadlock over a shared set.
+        exempt_keys = sorted({f"{p[0]}|{p[1]}" for p in pairs})
         query = f"""
-        UNWIND $keys AS key
         MATCH (n:{_MUTEABLE})
         WHERE n.user_id = $user_id AND n.project_id = $project_id
-          AND (n.id = key OR n.finding_id = key)
+          AND (n.id IN $keys OR n.finding_id IN $keys)
+        WITH n, [k IN [n.id, n.finding_id] WHERE k IN $keys] AS hits
+        UNWIND CASE WHEN size(hits) = 2 AND hits[0] = hits[1]
+                    THEN [hits[0]] ELSE hits END AS key
+        WITH key, n ORDER BY key
         SET n._mute_lock = true
         REMOVE n._mute_lock
         WITH key, n, {_FUNCTIONAL_LABEL} AS label
         WITH key, n, label, n:Muted AS already,
              {_PROVEN} AS proven,
-             any(p IN $exempt_pairs WHERE p[0] = label
-                 AND (p[1] = n.id OR p[1] = n.finding_id)) AS kept_visible,
+             (coalesce((label + '|' + n.id) IN $exempt_keys, false)
+              OR coalesce((label + '|' + n.finding_id) IN $exempt_keys, false)) AS kept_visible,
              {_MUTED_VIA} AS was_via
         FOREACH (_ IN CASE WHEN already OR proven OR kept_visible THEN [] ELSE [1] END |
             SET n:Muted,
@@ -557,7 +568,7 @@ class TriageMixin:
         """
         with self.driver.session() as session:
             rows = [dict(r) for r in session.run(
-                query, keys=mute_keys, exempt_pairs=pairs,
+                query, keys=mute_keys, exempt_keys=exempt_keys,
                 user_id=user_id, project_id=project_id,
                 muted_by=muted_by or user_id, reason=str(reason or "")[:500],
                 token_prefix=str(token_prefix or "")[:40])]

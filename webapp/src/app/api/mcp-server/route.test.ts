@@ -264,7 +264,7 @@ describe('request shape', () => {
   })
 
   test('an over-large body is refused before parsing', async () => {
-    const res = await POST(req({ raw: JSON.stringify({ x: 'y'.repeat(70_000) }) }))
+    const res = await POST(req({ raw: JSON.stringify({ x: 'y'.repeat(1_100_000) }) }))
     expect(res.status).toBe(413)
     expect(h.resolve).not.toHaveBeenCalled()
   })
@@ -361,11 +361,11 @@ describe('REGRESSION: the body is bounded BEFORE auth', () => {
   })
 
   test('the cap counts BYTES, not UTF-16 code units', async () => {
-    // 30k three-byte characters is ~90 KB but String.length is only 30k, so a
-    // length-based check passed a body documented as capped at 64 KiB.
-    const body = JSON.stringify({ jsonrpc: '2.0', method: 'x', id: 1, pad: '\u4e2d'.repeat(30_000) })
-    expect(body.length).toBeLessThan(64 * 1024)
-    expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(64 * 1024)
+    // 400k three-byte characters is ~1.2 MB but String.length is only 400k, so
+    // a length-based check passes a body documented as capped at 1 MiB.
+    const body = JSON.stringify({ jsonrpc: '2.0', method: 'x', id: 1, pad: '\u4e2d'.repeat(400_000) })
+    expect(body.length).toBeLessThan(1024 * 1024)
+    expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(1024 * 1024)
 
     const res = await POST(req({ raw: body }))
     expect(res.status).toBe(413)

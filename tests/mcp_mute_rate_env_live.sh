@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# LIVE check: MCP_MUTE_DAILY_BUDGET reaches the running webapp.
+# LIVE check: MCP_RATE_MUTE_PER_MIN reaches the running webapp.
 #
-# The budget is the one bound on how much an MCP token can hide per day, and it
-# is read from the webapp's environment. A value set in .env that compose does
-# not pass through is silently inert: the webapp keeps its default of 200.
+# The rate is how many mute and unmute calls one MCP token makes a minute, and
+# it is read from the webapp's environment. A value set in .env that compose
+# does not pass through is silently inert: the webapp keeps its default of 200.
 #
 #   1. The running redamon-webapp's value equals what .env configures (both
 #      empty when .env leaves it unset, which means the default).
@@ -15,12 +15,12 @@
 # (`docker compose up -d webapp`) before (1) can pass.
 #
 # Not part of `./redamon.sh test` (the gate matches tests/*_test.sh only). Run:
-#     bash tests/mcp_mute_budget_env_live.sh
+#     bash tests/mcp_mute_rate_env_live.sh
 # =============================================================================
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VAR=MCP_MUTE_DAILY_BUDGET
+VAR=MCP_RATE_MUTE_PER_MIN
 CONTAINER=redamon-webapp
 
 PASS=0; FAIL=0

@@ -1195,13 +1195,31 @@ class TestTheDelegatedMute(unittest.TestCase):
     def test_an_exempt_finding_is_kept_visible(self):
         client = SeqClient([])
         self.mute(client)
-        self.assertIn("any(p IN $exempt_pairs WHERE p[0] = label", client.queries[-1])
-        self.assertEqual(client.params[-1]["exempt_pairs"], [["Secret", "s9"]])
+        query = client.queries[-1]
+        # Either key a finding can be exempted under, each one set lookup.
+        self.assertIn("(label + '|' + n.id) IN $exempt_keys", query)
+        self.assertIn("(label + '|' + n.finding_id) IN $exempt_keys", query)
+        self.assertEqual(client.params[-1]["exempt_keys"], ["Secret|s9"])
 
     def test_a_malformed_pair_never_reaches_the_query(self):
         client = SeqClient([])
         self.mute(client, exempt_pairs=[["Secret", "s9"], ["x"], "ab", None])
-        self.assertEqual(client.params[-1]["exempt_pairs"], [["Secret", "s9"]])
+        self.assertEqual(client.params[-1]["exempt_keys"], ["Secret|s9"])
+
+    def test_the_write_is_one_pass_not_a_pass_per_key(self):
+        # A pass per key over eight labels takes minutes at 5000 keys.
+        client = SeqClient([])
+        self.mute(client)
+        query = client.queries[-1]
+        self.assertIn("(n.id IN $keys OR n.finding_id IN $keys)", query)
+        self.assertNotIn("UNWIND $keys", query)
+        self.assertNotIn("any(p IN", query)
+
+    def test_the_nodes_are_locked_in_key_order(self):
+        client = SeqClient([])
+        self.mute(client)
+        query = client.queries[-1]
+        self.assertLess(query.index("ORDER BY key"), query.index("SET n._mute_lock = true"))
 
     def test_the_mute_is_stamped_with_channel_and_token(self):
         client = SeqClient([_mute_row("v1")])
@@ -1218,10 +1236,11 @@ class TestTheDelegatedMute(unittest.TestCase):
         self.assertNotIn("DETACH DELETE", client.queries[-1])
         self.assertEqual(len(client.params[-1]["reason"]), 500)
 
-    def test_the_batch_is_capped_at_25(self):
+    def test_the_batch_is_capped(self):
+        from graph_db.mixins.recon.triage_mixin import MAX_DELEGATED_MUTE_BATCH
         client = SeqClient([])
-        self.mute(client, keys=[f"v{i:02d}" for i in range(40)])
-        self.assertEqual(len(client.params[-1]["keys"]), 25)
+        self.mute(client, keys=[f"v{i:05d}" for i in range(MAX_DELEGATED_MUTE_BATCH + 40)])
+        self.assertEqual(len(client.params[-1]["keys"]), MAX_DELEGATED_MUTE_BATCH)
 
     def test_every_matched_row_is_reported_and_unmatched_keys_are_not_found(self):
         client = SeqClient([_mute_row("v1"), _mute_row("v1", label="Secret")])

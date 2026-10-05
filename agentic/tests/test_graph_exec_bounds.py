@@ -238,10 +238,10 @@ class McpConcurrencyTests(unittest.TestCase):
     def tearDown(self):
         api._graph_exec_mcp_sem = None
 
-    def test_the_ceiling_defaults_to_two(self):
+    def test_the_ceiling_defaults_to_five(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("GRAPH_EXEC_MCP_CONCURRENCY", None)
-            self.assertEqual(api._graph_exec_mcp_semaphore()._value, 2)
+            self.assertEqual(api._graph_exec_mcp_semaphore()._value, 5)
 
     def test_the_ceiling_is_configurable(self):
         with mock.patch.dict(os.environ, {"GRAPH_EXEC_MCP_CONCURRENCY": "4"}):

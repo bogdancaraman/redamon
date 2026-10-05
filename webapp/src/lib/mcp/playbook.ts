@@ -426,7 +426,6 @@ export const ONBOARDING_PLAYBOOK: Record<string, PlaybookEntry> = {
       '`proven` (confirmed, carrying a proof, or confirmed by an attack chain) and `kept_visible` (a person unmuted it) are refusals a person decides on, in RedAmon. Report them; do not retry.',
       '`mute_outcome_unknown` means the answer was lost. Check with `search_muted_findings` (mutedVia "mcp") before retrying; a retry is safe.',
       'A Node ID can be reused after a rescan. Prefer the finding id, and check the name and label echoed back.',
-      'Each token has a daily mute budget. When it is spent, report it to a person rather than working around it.',
       'Muting every finding a remediation covers removes that remediation at the next triage run.',
     ],
     workflowRefs: ['suppress-noise'],
@@ -1071,7 +1070,7 @@ export const WORKFLOWS: Workflow[] = [
       '4. `mute_findings` with the finding ids and a reason a person will understand in Muted Nodes.',
       '5. Report every mute you made, with its reason, and every refusal (`proven`, `kept_visible`) for a person to decide.',
       '',
-      'If the answer is `mute_outcome_unknown`, check the muted list (mutedVia "mcp") before retrying. If the daily budget is spent, stop and report it.',
+      'If the answer is `mute_outcome_unknown`, check the muted list (mutedVia "mcp") before retrying.',
     ],
   },
   {

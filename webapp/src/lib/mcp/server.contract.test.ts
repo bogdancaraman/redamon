@@ -183,10 +183,10 @@ describe('the advertised input schemas are usable', () => {
     expect(mute.required).toEqual(expect.arrayContaining(['projectId', 'reason']))
     expect(mute.required).not.toContain('findingIds')
     expect(mute.properties.reason).toMatchObject({ minLength: 3, maxLength: 500 })
-    expect(mute.properties.findingIds.maxItems).toBe(25)
-    expect(mute.properties.nodeIds.maxItems).toBe(25)
+    expect(mute.properties.findingIds.maxItems).toBe(5000)
+    expect(mute.properties.nodeIds.maxItems).toBe(5000)
     const unmute = byName('unmute_findings').inputSchema as { properties: Record<string, { maxItems?: number }> }
-    expect(unmute.properties.findingIds.maxItems).toBe(100)
+    expect(unmute.properties.findingIds.maxItems).toBe(5000)
     expect(unmute.properties).toHaveProperty('includeRuleMutes')
   })
 

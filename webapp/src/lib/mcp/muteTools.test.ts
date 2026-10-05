@@ -5,9 +5,8 @@
  * The surface used to guarantee "only a person mutes". What replaces that
  * guarantee is enforced HERE and in the agent, so each control is pinned:
  *
- *  - the opt-in permission, the write bucket, and ownership before anything;
- *  - the per-token daily budget: reserved before the write, refunded for what
- *    was not muted, KEPT when the outcome is unknown;
+ *  - the opt-in permission, the mute bucket, and ownership before anything;
+ *  - the per-call cap, and that nothing caps a token's total;
  *  - busy checks that fail closed, before the write and (for activation) after;
  *  - the exact body the agent receives: the MCP source, the owner as muted_by,
  *    the token prefix, and the exemptions that protect a person's unmute;
@@ -64,15 +63,16 @@ vi.mock('@/app/api/graph/cache', () => ({ invalidateCache: (...a: unknown[]) => 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
-import {
-  McpAccessDenied,
-  McpScopeError,
-  __resetMuteBudget,
-  __resetRateLimiter,
-  reserveMuteBudget,
-} from '@/lib/mcpAuth'
+import { McpAccessDenied, McpScopeError, __resetRateLimiter, bucketSpec } from '@/lib/mcpAuth'
 import { McpToolError } from './errors'
-import { MUTED_VIA_FILTERS, muteFindings, searchMutedFindings, unmuteFindings } from './muteTools'
+import {
+  MUTED_VIA_FILTERS,
+  MUTE_MAX_REFS,
+  UNMUTE_MAX_REFS,
+  muteFindings,
+  searchMutedFindings,
+  unmuteFindings,
+} from './muteTools'
 import { buildMcpServer } from './server'
 import type { McpContext } from './tools'
 
@@ -113,7 +113,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   h.order.length = 0
   __resetRateLimiter()
-  __resetMuteBudget()
   vi.unstubAllEnvs()
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
   h.findProject.mockResolvedValue({ id: 'p1', userId: 'owner' })
@@ -190,15 +189,26 @@ describe('permissions, ownership and rate', () => {
     await expect(unmute()).rejects.toBeInstanceOf(McpAccessDenied)
     await expect(searchMutedFindings(ctx(), 'p1')).rejects.toBeInstanceOf(McpAccessDenied)
     expect(h.fetch).not.toHaveBeenCalled()
-    // Nothing was spent: the whole budget is still there.
-    expect(reserveMuteBudget('t1', 200).allowed).toBe(true)
   })
 
-  test('mute and unmute share the write bucket; the search uses the read bucket', async () => {
+  test('mute and unmute share the mute bucket, apart from the write and read buckets', async () => {
+    vi.stubEnv('MCP_RATE_MUTE_PER_MIN', '10')
+    // Were they still counted as writes, the second call would be refused.
+    vi.stubEnv('MCP_RATE_WRITE_PER_MIN', '1')
     for (let i = 0; i < 5; i++) await mute()
     for (let i = 0; i < 5; i++) await unmute()
     expect(await errorOf(mute())).toMatchObject({ code: 'rate_limited' })
+    expect(await errorOf(unmute())).toMatchObject({ code: 'rate_limited' })
     await expect(searchMutedFindings(ctx(), 'p1')).resolves.toBeDefined()
+  })
+
+  test('the mute bucket is 200 calls a minute per token, and one token does not spend another\'s', async () => {
+    expect(bucketSpec('mute')).toEqual({ limit: 200, windowMs: 60_000 })
+    expect(bucketSpec('write').limit).toBe(10)
+    vi.stubEnv('MCP_RATE_MUTE_PER_MIN', '1')
+    await mute()
+    expect(await errorOf(mute())).toMatchObject({ code: 'rate_limited' })
+    await expect(mute({}, ctx(undefined, 't2'))).resolves.toBeDefined()
   })
 })
 
@@ -208,13 +218,19 @@ describe('arguments', () => {
     expect(await errorOf(unmuteFindings(ctx(), 'p1', {}))).toMatchObject({ code: 'bad_args' })
   })
 
+  test('one call names up to 5000 findings, to mute or to unmute', () => {
+    expect([MUTE_MAX_REFS, UNMUTE_MAX_REFS]).toEqual([5000, 5000])
+  })
+
   test('the cap is on distinct findings, across both lists', async () => {
-    const ids = Array.from({ length: 20 }, (_, i) => `v${i}`)
+    const ids = Array.from({ length: MUTE_MAX_REFS - 5 }, (_, i) => `v${i}`)
     await expect(mute({ findingIds: [...ids, ...ids], nodeIds: ['1', '2', '3', '4', '5'] })).resolves.toBeDefined()
+    expect(sent('mute_many')[0].keys).toHaveLength(MUTE_MAX_REFS - 5)
     expect(await errorOf(mute({ findingIds: ids, nodeIds: ['1', '2', '3', '4', '5', '6'] })))
       .toMatchObject({ code: 'bad_args' })
-    const many = Array.from({ length: 101 }, (_, i) => `v${i}`)
+    const many = Array.from({ length: UNMUTE_MAX_REFS + 1 }, (_, i) => `v${i}`)
     expect(await errorOf(unmute({ findingIds: many }))).toMatchObject({ code: 'bad_args' })
+    await expect(unmute({ findingIds: many.slice(1) })).resolves.toBeDefined()
   })
 
   test('ids are checked, whatever reaches the tool body', async () => {
@@ -367,8 +383,6 @@ describe('mute_findings: a person who unmutes during the call wins', () => {
     expect(r.muted).toEqual([])
     expect(r.refused).toEqual([{ ref: 'v1', reason: 'kept_visible', label: 'Vulnerability' }])
     expect(h.order).toEqual(['activation', 'mute_many', 'unmute_many', 'activation'])
-    // Nothing stayed muted, so nothing is charged.
-    expect(reserveMuteBudget('t1', 200).allowed).toBe(true)
   })
 
   test('the re-read asks only about what this call muted', async () => {
@@ -399,70 +413,34 @@ describe('mute_findings: a person who unmutes during the call wins', () => {
   })
 })
 
-describe('mute_findings: the daily budget', () => {
-  test('a call past the budget is refused whole, naming the reset, with nothing sent', async () => {
-    vi.stubEnv('MCP_MUTE_DAILY_BUDGET', '3')
-    const err = await errorOf(mute({ findingIds: ['a', 'b', 'c', 'd'] }))
-    expect(err).toMatchObject({ code: 'budget_exhausted' })
-    expect(err?.message).toMatch(/resets at \d{4}-\d{2}-\d{2}T/)
-    expect(h.fetch).not.toHaveBeenCalled()
-  })
-
-  test('success refunds down to what was actually muted', async () => {
-    vi.stubEnv('MCP_MUTE_DAILY_BUDGET', '10')
-    agent.mute_many = {
-      items: [muteItem(), muteItem({ ref: 'v2', key: 'v2', outcome: 'proven' })],
-      not_found: ['v3'], mcp_gated: true,
+describe('mute_findings: no daily cap', () => {
+  test('a token mutes a full call again and again, and the answer carries no budget', async () => {
+    // A value left in an old .env is inert: nothing reads it.
+    vi.stubEnv('MCP_MUTE_DAILY_BUDGET', '1')
+    const ids = Array.from({ length: MUTE_MAX_REFS }, (_, i) => `v${i}`)
+    for (let i = 0; i < 3; i++) {
+      expect(await mute({ findingIds: ids })).not.toHaveProperty('budget')
     }
-    const r = await mute({ findingIds: ['v1', 'v2', 'v3'] })
-    expect(r.budget).toMatchObject({ used: 1, limit: 10 })
-    expect(reserveMuteBudget('t1', 9).allowed).toBe(true)
+    expect(sent('mute_many').map(b => (b.keys as string[]).length)).toEqual([MUTE_MAX_REFS, MUTE_MAX_REFS, MUTE_MAX_REFS])
   })
+})
 
-  test('refunded in full when busy, unreachable or refused by the agent', async () => {
-    vi.stubEnv('MCP_MUTE_DAILY_BUDGET', '3')
+describe('mute_findings: a definite failure and an uncertain one', () => {
+  test('busy, unreachable and a coded refusal each say nothing was changed', async () => {
     h.activationBusy.mockResolvedValueOnce(true)
-    expect(await errorOf(mute({ findingIds: ['a', 'b', 'c'] }))).toMatchObject({ code: 'busy' })
+    expect(await errorOf(mute())).toMatchObject({ code: 'busy' })
 
     agent.mute_many = { __throw: refused('ECONNREFUSED') }
-    expect(await errorOf(mute({ findingIds: ['a', 'b', 'c'] }))).toMatchObject({ code: 'agent_unreachable' })
+    expect(await errorOf(mute())).toMatchObject({ code: 'agent_unreachable' })
 
     agent.mute_many = { __status: 400, body: { error: 'reason must be 3-500 characters' } }
-    expect(await errorOf(mute({ findingIds: ['a', 'b', 'c'] }))).toMatchObject({ code: 'agent_failed' })
+    expect(await errorOf(mute())).toMatchObject({ code: 'agent_failed' })
 
     agent.mute_many = { __status: 503, body: { error: 'locked; nothing was changed', code: 'busy' } }
-    expect(await errorOf(mute({ findingIds: ['a', 'b', 'c'] }))).toMatchObject({ code: 'agent_failed' })
-
-    expect(reserveMuteBudget('t1', 3).allowed).toBe(true)
+    expect(await errorOf(mute())).toMatchObject({ code: 'agent_failed' })
   })
 
-  test('a refund never lands in the next daily window', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    try {
-      vi.setSystemTime(new Date('2026-09-29T23:59:00Z'))
-      vi.stubEnv('MCP_MUTE_DAILY_BUDGET', '3')
-      h.fetch.mockImplementationOnce(async () => {
-        // The window rolls over while this call is at the agent, and the
-        // token spends the whole new one.
-        vi.setSystemTime(new Date('2026-09-30T23:59:30Z'))
-        expect(reserveMuteBudget('t1', 3).allowed).toBe(true)
-        return { ok: true, status: 200, json: async () => ({ items: [], not_found: ['a', 'b', 'c'], mcp_gated: true }) }
-      })
-      await mute({ findingIds: ['a', 'b', 'c'] })
-      expect(reserveMuteBudget('t1', 1).allowed).toBe(false)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  test('KEPT when the outcome is unknown: a mute that may have landed counts', async () => {
-    vi.stubEnv('MCP_MUTE_DAILY_BUDGET', '3')
-    agent.mute_many = { __throw: timeout() }
-    expect(await errorOf(mute({ findingIds: ['a', 'b', 'c'] }))).toMatchObject({ code: 'mute_outcome_unknown' })
-    expect(reserveMuteBudget('t1', 1).allowed).toBe(false)
-  })
-
-  test('a 5xx after sending may follow a commit, so it is unknown and KEPT, not refunded', async () => {
+  test('a 5xx after sending may follow a commit, so it is unknown, never a refusal', async () => {
     // A lost commit acknowledgement reaches the agent as an exception after
     // the write: its 500 does not mean "nothing was changed".
     for (const answer of [
@@ -471,12 +449,8 @@ describe('mute_findings: the daily budget', () => {
       { __status: 504, body: {} },
       { __status: 503, body: { error: 'uncoded' } },
     ]) {
-      __resetMuteBudget()
-      vi.stubEnv('MCP_MUTE_DAILY_BUDGET', '3')
       agent.mute_many = answer
-      expect(await errorOf(mute({ findingIds: ['a', 'b', 'c'] })), String(answer.__status))
-        .toMatchObject({ code: 'mute_outcome_unknown' })
-      expect(reserveMuteBudget('t1', 1).allowed, String(answer.__status)).toBe(false)
+      expect(await errorOf(mute()), String(answer.__status)).toMatchObject({ code: 'mute_outcome_unknown' })
     }
   })
 })
@@ -516,6 +490,14 @@ describe('mute_findings: a lost answer is an unknown outcome', () => {
       action: 'muted_nodes.muted',
       after: { outcome: 'unknown', requested: { findingIds: ['v1'], nodeIds: ['812'] }, tokenPrefix: TOKEN_PREFIX },
     })
+  })
+
+  test('the unknown-outcome audit of a large call names 100 ids and counts them all', async () => {
+    agent.mute_many = { __throw: timeout() }
+    await errorOf(mute({ findingIds: Array.from({ length: 250 }, (_, i) => `v${i}`), nodeIds: ['812'] }))
+    const { requested } = h.writeAudit.mock.calls[0][0].after
+    expect(requested.findingIds).toHaveLength(100)
+    expect(requested).toMatchObject({ nodeIds: ['812'], count: 251 })
   })
 
   test('a reset after sending is unknown too; only a refusal before sending is unreachable', async () => {
@@ -816,11 +798,16 @@ describe('the advertised schema is enforced', () => {
     agent.unmute_many = { __throw: timeout() }
     r = await call('unmute_findings', { projectId: 'p1', findingIds: ['v1'] })
     expect(r.text).toMatch(/\(unmute_outcome_unknown\)/)
+  })
 
-    // The unknown mute above kept its reservation: 1 of 1 is spent.
-    vi.stubEnv('MCP_MUTE_DAILY_BUDGET', '1')
-    r = await call('mute_findings', { projectId: 'p1', findingIds: ['v1'], reason: 'noise, per owner' })
-    expect(r.text).toMatch(/^Refused \(budget_exhausted\)/)
+  test('5000 ids pass the advertised schema, and one more is refused before the tool runs', async () => {
+    const ids = Array.from({ length: MUTE_MAX_REFS + 1 }, (_, i) => `v${i}`)
+    let r = await call('mute_findings', { projectId: 'p1', findingIds: ids.slice(1), reason: 'noise, per owner' })
+    expect(r.isError).toBe(false)
+    h.fetch.mockClear()
+    r = await call('mute_findings', { projectId: 'p1', findingIds: ids, reason: 'noise, per owner' })
+    expect(r.isError).toBe(true)
+    expect(sent()).toEqual([])
   })
 })
 

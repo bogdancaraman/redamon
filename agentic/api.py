@@ -3324,7 +3324,7 @@ def _graph_exec_get_driver():
 _GRAPH_EXEC_DEFAULT_MAX_RECORDS = 1000
 _GRAPH_EXEC_DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 _GRAPH_EXEC_DEFAULT_TIMEOUT_MS = 120_000
-_GRAPH_EXEC_DEFAULT_MCP_CONCURRENCY = 2
+_GRAPH_EXEC_DEFAULT_MCP_CONCURRENCY = 5
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -3533,8 +3533,8 @@ _GRAPH_ID_RE = re.compile(r"[0-9]{1,18}")
 
 #: Per-call ceilings, re-checked here because any master-key holder can call
 #: this endpoint without going through the webapp's own checks.
-_MCP_MUTE_MAX = 25
-_MCP_UNMUTE_MAX = 100
+_MCP_MUTE_MAX = 5000
+_MCP_UNMUTE_MAX = 5000
 _UI_UNMUTE_MAX = 500
 _MUTE_REASON_MAX = 500
 
@@ -3614,8 +3614,8 @@ def _triage_request_error(body) -> Optional[str]:
             return f"reason must be 3-{_MUTE_REASON_MAX} characters"
         if not keys and not graph_ids:
             return "mute_many needs keys or graph_ids"
-        # Counted together: the mixin caps the combined set, so 25 of each
-        # would drop refs that are then reported neither done nor not found.
+        # Counted together: the mixin caps the combined set, so a full list of
+        # each would drop refs that are then reported neither done nor not found.
         if len(keys) + len(graph_ids) > _MCP_MUTE_MAX:
             return f"at most {_MCP_MUTE_MAX} findings per mute"
     if body.op in ("resolve_muted", "unmute_many"):
@@ -3939,8 +3939,8 @@ async def graph_triage(body: GraphTriageRequest):
         elif body.source == "mcp":
             # An external agent behind a personal access token is the least
             # trusted caller this endpoint has, and unlike /graph/exec it took
-            # NO concurrency ceiling at all. The published guarantee is "at most
-            # 2 at a time across all tokens", and the contention lands on the
+            # NO concurrency ceiling at all. The published guarantee is a fixed
+            # number at a time across all tokens, and the contention lands on the
             # operator's own Priority Board, which reads this same data through
             # this same endpoint.
             async with _graph_exec_mcp_semaphore():

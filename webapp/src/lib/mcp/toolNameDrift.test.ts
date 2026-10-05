@@ -180,6 +180,11 @@ describe('P8: every tool named in an agent-facing string exists', () => {
       /one write on this surface/i,
       /refused while a triage run is in progress/i,
       /cannot mute or unmute/i,
+      // Muting lost its daily cap. "Daily budget" alone still names the
+      // question budget, so these match the mute's wording only.
+      /daily mute budget/i,
+      /within a daily budget/i,
+      /MCP_MUTE_DAILY_BUDGET/,
     ]
     const problems: string[] = []
     for (const file of AGENT_FACING) {

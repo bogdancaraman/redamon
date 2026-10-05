@@ -4,7 +4,7 @@ This endpoint is the backing store for the inbound MCP server's findings tools,
 and it took NEITHER of the two bounds `/graph/exec` applies: no concurrency
 ceiling, and no cap on how many rows the mixin returns. Both matter beyond
 performance. The published guarantee is that graph reads from MCP run at most
-two at a time across all tokens, and the contention lands on the operator's own
+five at a time across all tokens, and the contention lands on the operator's own
 Priority Board, which reads the same data through this same endpoint.
 
 The browser paths deliberately keep their previous behaviour: they set no
@@ -666,17 +666,19 @@ class MuteManyValidationTests(_TriageEndpointCase):
     async def test_at_least_one_ref(self):
         await self.assertRefused(keys=[], graph_ids=[])
 
-    async def test_at_most_25_keys_and_25_node_ids(self):
-        await self.assertRefused(keys=[f"v{i}" for i in range(26)])
-        await self.assertRefused(graph_ids=[str(i) for i in range(26)])
+    async def test_at_most_5000_keys_or_node_ids(self):
+        self.assertEqual(api._MCP_MUTE_MAX, 5000)
+        await self.assertRefused(keys=[f"v{i}" for i in range(5001)])
+        await self.assertRefused(graph_ids=[str(i) for i in range(5001)])
 
-    async def test_keys_and_node_ids_over_25_together_are_refused_not_truncated(self):
-        # 25 of each used to pass here, and the mixin then muted the first 25
-        # of the combined set and reported the rest neither done nor not found.
-        self.assertIn("at most 25", await self.assertRefused(
-            keys=[f"v{i}" for i in range(13)], graph_ids=[str(i) for i in range(13)]))
-        resp = await self.call(**{**_GOOD_MUTE_MANY, "keys": [f"v{i}" for i in range(12)],
-                                  "graph_ids": [str(i) for i in range(13)]})
+    async def test_keys_and_node_ids_over_the_cap_together_are_refused_not_truncated(self):
+        # A full list of each would pass a per-list check, and the mixin would
+        # then mute the first of the combined set and report the rest neither
+        # done nor not found.
+        self.assertIn("at most 5000", await self.assertRefused(
+            keys=[f"v{i}" for i in range(2501)], graph_ids=[str(i) for i in range(2500)]))
+        resp = await self.call(**{**_GOOD_MUTE_MANY, "keys": [f"v{i}" for i in range(2500)],
+                                  "graph_ids": [str(i) for i in range(2500)]})
         self.assertEqual(resp.status_code, 200)
 
     async def test_graph_ids_are_digits_only(self):
@@ -723,15 +725,18 @@ class UnmuteScopeTests(_TriageEndpointCase):
         await self.call(op="unmute_many", user_id="u1", project_id="p1", keys=["v1"])
         self.assertIs(self.calls("unmute_findings")[0][4], False)
 
-    async def test_the_mcp_ceiling_is_100_and_the_ui_ceiling_500(self):
-        keys = [f"v{i}" for i in range(101)]
+    async def test_the_mcp_ceiling_is_5000_and_the_ui_ceiling_500(self):
+        keys = [f"v{i}" for i in range(501)]
+        resp = await self.call(op="unmute_many", user_id="u1", project_id="p1", keys=keys)
+        self.assertEqual(resp.status_code, 400)
         resp = await self.call(op="unmute_many", user_id="u1", project_id="p1",
                                keys=keys, source="mcp")
-        self.assertEqual(resp.status_code, 400)
-        resp = await self.call(op="unmute_many", user_id="u1", project_id="p1", keys=keys)
         self.assertEqual(resp.status_code, 200)
         resp = await self.call(op="unmute_many", user_id="u1", project_id="p1",
-                               keys=[f"v{i}" for i in range(501)])
+                               keys=[f"v{i}" for i in range(5000)], source="mcp")
+        self.assertEqual(resp.status_code, 200)
+        resp = await self.call(op="unmute_many", user_id="u1", project_id="p1",
+                               keys=[f"v{i}" for i in range(5001)], source="mcp")
         self.assertEqual(resp.status_code, 400)
 
     async def test_an_unmute_is_logged_with_its_channel(self):
@@ -753,8 +758,8 @@ class UnmuteScopeTests(_TriageEndpointCase):
         for op in ("resolve_muted", "unmute_many"):
             with self.subTest(op=op):
                 resp = await self.call(op=op, user_id="u1", project_id="p1", source="mcp",
-                                       keys=[f"v{i}" for i in range(60)],
-                                       graph_ids=[str(i) for i in range(41)])
+                                       keys=[f"v{i}" for i in range(3000)],
+                                       graph_ids=[str(i) for i in range(2001)])
                 self.assertEqual(resp.status_code, 400)
         self.assertEqual(self.calls("resolve_muted") + self.calls("unmute_findings"), [])
 

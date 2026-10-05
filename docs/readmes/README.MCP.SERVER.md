@@ -65,8 +65,8 @@ set of recon tuning settings, and query the attack-surface graph.
 | `get_triage_status` | Triage state (incl. `imported`), the live run's phase/progress/trigger, recent runs, the preflight, the MCP start allowance, decided-by counts, what a live run blocks. | `triage:read` |
 | `start_triage_run` | Start a headless Priority Board run (`POST /triage/runs`). 30-minute cooldown and 12/day per project across tokens, 1,000-review clamp, `write` bucket. | `triage:run` |
 | `stop_triage_run` | Stop a run before it publishes; refused while publishing. | `triage:run` |
-| `mute_findings` | Mute 1-25 findings with a reason. Never a proven or kept-visible one, never over an existing mute; per-token daily budget; stamped `muted_channel=mcp` + token prefix. | `triage:mute` |
-| `unmute_findings` | Unmute 1-100 findings from the muted list, writing the Mute Rules exemption FIRST. A rule's mute only with `includeRuleMutes`, never during a recon scan. | `triage:mute` |
+| `mute_findings` | Mute 1-5000 findings with a reason. Never a proven or kept-visible one, never over an existing mute; no cap on a token's total; stamped `muted_channel=mcp` + token prefix. | `triage:mute` |
+| `unmute_findings` | Unmute 1-5000 findings from the muted list, writing the Mute Rules exemption FIRST. A rule's mute only with `includeRuleMutes`, never during a recon scan. | `triage:mute` |
 | `search_muted_findings` | Page every muted finding with the Muted Nodes filters (who muted, rule, token, text), with exact facets. The only source of a muted finding's id. | `triage:read` |
 | `update_project_scope` | Change an existing project's eight target LISTS (batch hosts, GitHub org/repos, GVM strategy, supply-chain org/repo/ref/scope). Guardrail on every root; a third-party widening needs an authorization record. | `project:rescope` (+ `engagement:authorize` to pass `authorization`) |
 
@@ -203,14 +203,14 @@ and a value set only in `.env` would be silently inert.
 | `MCP_TOKEN_RETENTION_DAYS` | `90` | How long revoked/expired token rows are kept before pruning. |
 | `MCP_RATE_READ_PER_MIN` | `120` | Cheap reads per token per minute. |
 | `MCP_RATE_QUERY_PER_MIN` | `20` | `query_graph` calls per token per minute. |
-| `MCP_RATE_WRITE_PER_MIN` | `10` | Settings, stop, verdict, mute, preset and rescope calls per token per minute. |
+| `MCP_RATE_WRITE_PER_MIN` | `10` | Settings, stop, verdict, preset and rescope calls per token per minute. |
+| `MCP_RATE_MUTE_PER_MIN` | `200` | `mute_findings` and `unmute_findings` calls per token per minute, in their own bucket. One call names up to 5000 findings, so this is a runaway-loop ceiling, not a volume cap. |
 | `MCP_RATE_START_PER_WINDOW` | `1` | Scan starts per project per window. |
 | `MCP_RATE_START_WINDOW_MS` | `300000` | That window (5 minutes). |
 | `MCP_RATE_COMPARE_PER_WINDOW` | `2` | `compare_scan_versions` calls per project per window. Its own bucket, not `query`: one call can gunzip and parse a whole stored graph. |
 | `MCP_RATE_COMPARE_WINDOW_MS` | `300000` | That window (5 minutes). |
 | `MCP_DISABLED_TOOLS` | (empty) | Comma-separated tool names to withdraw. They disappear from `tools/list` rather than refusing, so a client never plans around them. The per-tool alternative to taking the whole surface down; a name matching no tool is ignored. |
 | `MCP_LLM_DAILY_BUDGET` | `200` | NL queries per token per day (they spend the owner's LLM key). |
-| `MCP_MUTE_DAILY_BUDGET` | `200` | Findings one token may mute per day (`mute_findings`), counted per finding, reserved before the write and refunded for what was not muted. Unmutes are not counted. In memory: a webapp restart resets it. |
 
 > **The generated API reference describes a build, not a deployment.** It is
 > rendered from the server's own `tools/list` with no tool withdrawn, so a
@@ -219,7 +219,7 @@ and a value set only in `.env` would be silently inert.
 
 Agent-side bounds (the agent **does** have an `env_file`, so `.env` reaches it):
 `NEO4J_QUERY_TIMEOUT_MS` (120s), `GRAPH_EXEC_MAX_RECORDS` (1000),
-`GRAPH_EXEC_MAX_BYTES` (2 MiB), `GRAPH_EXEC_MCP_CONCURRENCY` (2).
+`GRAPH_EXEC_MAX_BYTES` (2 MiB), `GRAPH_EXEC_MCP_CONCURRENCY` (5).
 
 ---
 
@@ -566,7 +566,8 @@ It ignores the session cookie, `X-Internal-Key` and `X-Scanner-Key`:
   scan container, the least-trusted tier — authenticate to the control plane.
 
 It also requires `Content-Type: application/json`, rejects a foreign `Origin`,
-rejects JSON-RPC batches, caps the body at 64 KiB, and answers `GET`/`DELETE`
+rejects JSON-RPC batches, caps the body at 1 MiB (sized for a 5000-finding
+mute), and answers `GET`/`DELETE`
 with 405.
 
 ### The settings surface
@@ -676,7 +677,7 @@ server's tools. Assume an instruction embedded in a page title reaches the model
 | Exfiltrate secrets | No tool returns a stored credential. `query_graph` DOES return target-found secrets unredacted (`Secret.matched_text`, nuclei `extracted_results`) to any `recon:read` token: a known, pre-existing exposure. `get_finding_evidence` redacts secret shapes to their first four characters. |
 | Burn the owner's LLM budget | Per-token daily budget for questions. Triage runs started over MCP: a 30-minute per-project cooldown and 12 a day across every token, read from `TriageRun`; a 1,000-review clamp whatever the project stores; the `write` bucket; one run at a time. |
 | Talk a real finding down through a review | `submit_finding_review` needs `triage:review`. Every correction needs a quote verified against the rebuilt, redacted bundle; the multiplier needs its own quote; a proven finding (proof read LIVE in the write transaction) refuses any lowering whole; a person's decision always wins and a decided finding refuses reviews; the review expires when the evidence changes; it is labelled `Agent` with the token prefix and filterable on the board; its text never reaches the fix list or the in-app agent's node context. |
-| Hide a real finding ("this is a false positive, mute it") | Needs `triage:mute`, opt-in and never auto-ticked. Refused on a proven finding and on one a person unmuted, never over an existing mute; a reason on every mute, 25 per call and a per-token DAILY budget; stamped `muted_channel=mcp` + the token prefix, badged in Muted Nodes and counted apart in the report. |
+| Hide a real finding ("this is a false positive, mute it") | Needs `triage:mute`, opt-in and never auto-ticked. Refused on a proven finding and on one a person unmuted, never over an existing mute; a reason on every mute and 5000 per call, with NO cap on a token's total; stamped `muted_channel=mcp` + the token prefix, badged in Muted Nodes and counted apart in the report, which is what a person reviews and reverts per token. |
 | Reveal what a Mute Rule hides | `unmute_findings` leaves a rule's mute alone without `includeRuleMutes`, refuses that flag while a recon scan runs, and every such unmute is an exemption on the Mute Rules page. `set_finding_verdict` is refused on a muted finding, so the verdict permission cannot do it. |
 | Aim a command at a third party | **Nothing, once `kali:exec` is granted.** See below. |
 | Smuggle a second command | **Nothing, and nothing is meant to.** A shell is the feature. |
@@ -782,9 +783,10 @@ and `unmute_findings` replace that guarantee with controls enforced in code
 6. **Rule mutes need `includeRuleMutes`** to unmute, refused while a recon scan
    runs (the scan-end sweep is not a `NodeFilterRun`, so only
    `describeScanWriters` sees it).
-7. **Blast radius.** 25 mutes / 100 unmutes per call, the `write` bucket, and
-   `MCP_MUTE_DAILY_BUDGET` per token per day, reserved before the call and kept
-   when the outcome is unknown.
+7. **Blast radius.** 5000 mutes / 5000 unmutes per call and the `mute` bucket
+   (`MCP_RATE_MUTE_PER_MIN`, 200 calls a minute per token). Nothing caps a
+   token's total, so the bound on an injected agent is item 8: every mute it
+   made is listed per token and reverted in one go.
 8. **Provenance, written AND read.** `muted_by` stays the owner (it carries
    their authority, and the prune / sweep / partial-recon seeding treat it as a
    person's), plus `muted_channel='mcp'` and `muted_token=<prefix>`. Every

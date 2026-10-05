@@ -226,17 +226,18 @@ describe('the scope filter', () => {
       const text = packText(scopes, 'triage')
       expect(text, `${scopes.join('+')}`).not.toContain('### Suppress noise')
       expect(text).not.toContain('### Restore muted findings')
-      expect(text).not.toContain('Muting has its own daily budget')
+      expect(text).not.toContain('One call mutes at most')
       // Named only in the "you cannot call these" tail, with the permission it needs.
       expect(text).toContain('`mute_findings` - needs `triage:mute`')
     }
   })
 
-  test('a triage:mute pack teaches the procedure and the daily budget', () => {
+  test('a triage:mute pack teaches the procedure and the per-call cap', () => {
     const text = packText(['recon:read', 'triage:read', 'triage:write', 'triage:mute'], 'triage')
     expect(text).toContain('### Suppress noise')
     expect(text).toContain('### Restore muted findings')
-    expect(text).toMatch(/Muting has its own daily budget: at most \d+ findings a day per token/)
+    expect(text).toMatch(/One call mutes at most 5000 findings and unmutes at most 5000/)
+    expect(text).not.toMatch(/daily (mute )?budget is spent/)
     expect(text).toContain('a mute or unmute outcome is unknown')
   })
 

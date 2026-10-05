@@ -41,14 +41,17 @@ describe('the copy', () => {
     }
   })
 
-  test('the mute copy names what bounds it: a reason, a daily limit, and undo', () => {
+  test('the mute copy names what bounds it: a reason, the per-call cap, and undo', () => {
     const copy = MCP_SCOPE_COPY['triage:mute']
     expect(copy.access).toBe('write')
-    expect(copy.blurb).toMatch(/daily limit/)
+    expect(copy.blurb).toMatch(/up to 5,000 findings/)
+    // The operator ticking this must be told nothing caps the total.
+    expect(copy.blurb).toMatch(/no daily limit/)
     expect(copy.blurb).toMatch(/can be undone/)
     expect(copy.blurb).toMatch(/needs a reason/)
     expect(copy.blurb).toMatch(/never hides a confirmed finding/)
-    expect(copy.detail).toMatch(/MCP_MUTE_DAILY_BUDGET/)
+    expect(copy.detail).toMatch(/MCP_RATE_MUTE_PER_MIN/)
+    expect(copy.detail).not.toMatch(/MCP_MUTE_DAILY_BUDGET/)
     expect(SCOPE_GROUPS.find(g => g.id === 'write')!.scopes).toContain('triage:mute')
   })
 

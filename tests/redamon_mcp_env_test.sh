@@ -31,7 +31,7 @@ echo "== every MCP knob is in the webapp compose environment block =="
 # The webapp block runs from `  webapp:` to the next top-level service key.
 WEBAPP_BLOCK="$(awk '/^  webapp:/{f=1} f&&/^  [a-z_-]+:$/&&!/^  webapp:/{f=0} f' "$COMPOSE")"
 for var in MCP_SERVER_ENABLED MCP_TOKEN_RETENTION_DAYS MCP_RATE_READ_PER_MIN \
-           MCP_RATE_QUERY_PER_MIN MCP_RATE_WRITE_PER_MIN MCP_RATE_START_PER_WINDOW \
+           MCP_RATE_QUERY_PER_MIN MCP_RATE_WRITE_PER_MIN MCP_RATE_MUTE_PER_MIN MCP_RATE_START_PER_WINDOW \
            MCP_RATE_START_WINDOW_MS MCP_LLM_DAILY_BUDGET; do
     if grep -qE "^[[:space:]]+${var}:" <<<"$WEBAPP_BLOCK"; then
         ok "$var reaches the webapp"

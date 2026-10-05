@@ -1085,13 +1085,13 @@ services:
       MCP_RATE_READ_PER_MIN: ${MCP_RATE_READ_PER_MIN:-}
       MCP_RATE_QUERY_PER_MIN: ${MCP_RATE_QUERY_PER_MIN:-}
       MCP_RATE_WRITE_PER_MIN: ${MCP_RATE_WRITE_PER_MIN:-}
+      MCP_RATE_MUTE_PER_MIN: ${MCP_RATE_MUTE_PER_MIN:-}
       MCP_RATE_START_PER_WINDOW: ${MCP_RATE_START_PER_WINDOW:-}
       MCP_RATE_START_WINDOW_MS: ${MCP_RATE_START_WINDOW_MS:-}
       MCP_RATE_COMPARE_PER_WINDOW: ${MCP_RATE_COMPARE_PER_WINDOW:-}
       MCP_RATE_COMPARE_WINDOW_MS: ${MCP_RATE_COMPARE_WINDOW_MS:-}
       MCP_DISABLED_TOOLS: ${MCP_DISABLED_TOOLS:-}
       MCP_LLM_DAILY_BUDGET: ${MCP_LLM_DAILY_BUDGET:-}
-      MCP_MUTE_DAILY_BUDGET: ${MCP_MUTE_DAILY_BUDGET:-}
       # Sandbox commands (kali_exec). DEFAULT ON, and still independent of
       # MCP_SERVER_ENABLED: the server stays off until enabled, and a token needs
       # the kali:exec permission before any command runs. Set false to withdraw

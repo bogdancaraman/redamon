@@ -36,14 +36,19 @@ export const runtime = 'nodejs'
 /** The tools read live data; a cached MCP response would be actively wrong. */
 export const dynamic = 'force-dynamic'
 
-/** 64 KiB. A tool call is a small JSON-RPC envelope; anything larger is abuse. */
-const MAX_BODY_BYTES = 64 * 1024
+/**
+ * 1 MiB. Sized for the one large legitimate call: a mute or unmute naming
+ * 5,000 findings by id, and an id runs to 200 characters. Every other tool
+ * call is a small JSON-RPC envelope; anything larger than this is abuse.
+ */
+const MAX_BODY_BYTES = 1024 * 1024
 
 /**
  * Read the body, aborting once it exceeds `limit` BYTES.
  *
- * Bytes, not `String.length`: the latter counts UTF-16 code units, so 64k
- * three-byte characters is 192 KB and passed a check documented as 64 KiB.
+ * Bytes, not `String.length`: the latter counts UTF-16 code units, so a body
+ * of three-byte characters is three times its length in bytes and passed a
+ * check documented in bytes.
  * Streaming means a huge body costs the limit, not its own size.
  */
 async function readBounded(request: NextRequest, limit: number): Promise<string> {

@@ -18,8 +18,8 @@
  *  - no mute is ever overwritten, whoever made it;
  *  - a rule mute is released only on an explicit flag, and never while a recon
  *    scan is running (its end-of-scan sweep read the exemptions when it began);
- *  - a reason on every mute, a per-call cap and a per-token DAILY budget, the
- *    one bound on how much an injected agent can hide in total;
+ *  - a reason on every mute, a per-call cap and a per-token rate limit. There
+ *    is no cap on the total: what an agent hid is bounded by review, below;
  *  - provenance that is READ, not just written: `muted_channel` / `muted_token`
  *    split agent mutes from people's in Muted Nodes, the report and here, so
  *    they can be reviewed and reverted per token;
@@ -32,13 +32,7 @@
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { activationBusy } from '@/lib/activationLock'
-import {
-  assertMcpProjectAccess,
-  refundMuteBudget,
-  requireScope,
-  reserveMuteBudget,
-  type BudgetDecision,
-} from '@/lib/mcpAuth'
+import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { describeNodeFilterWriter } from '@/lib/nodeFilterRun'
 import { describeScanWriters } from '@/lib/graphWriters'
 import { invalidateCache } from '@/app/api/graph/cache'
@@ -62,8 +56,8 @@ import {
 } from '@/lib/mcp/triageGraph'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
 
-export const MUTE_MAX_REFS = 25
-export const UNMUTE_MAX_REFS = 100
+export const MUTE_MAX_REFS = 5000
+export const UNMUTE_MAX_REFS = 5000
 export const MUTE_REASON_MIN = 3
 export const MUTE_REASON_MAX = 500
 
@@ -120,6 +114,17 @@ function refsOf(
 }
 
 const pairKey = (label: unknown, key: unknown) => `${String(label)}\u0000${String(key)}`
+
+/** How many ids one audit row names; its count says how many there were. */
+const AUDIT_MAX_REFS = 100
+
+function requestedForAudit(keys: string[], graphIds: string[]) {
+  return {
+    findingIds: keys.slice(0, AUDIT_MAX_REFS),
+    nodeIds: graphIds.slice(0, AUDIT_MAX_REFS),
+    count: keys.length + graphIds.length,
+  }
+}
 
 /**
  * Put back what this call re-hid behind a person's back.
@@ -179,10 +184,6 @@ async function releaseBroughtBack(
   }
 }
 
-function budgetView(b: BudgetDecision | null) {
-  return b ? { used: b.used, limit: b.limit, resetsAt: b.resetsAt } : undefined
-}
-
 // --- mute ------------------------------------------------------------------------
 
 export async function muteFindings(
@@ -191,7 +192,7 @@ export async function muteFindings(
   args: { findingIds?: string[]; nodeIds?: (string | number)[]; reason: string }
 ) {
   requireScope(ctx.token, 'triage:mute')
-  enforceRate(ctx, 'write')
+  enforceRate(ctx, 'mute')
   await assertMcpProjectAccess(ctx.token.userId, projectId)
 
   const { keys, graphIds } = refsOf(args.findingIds, args.nodeIds, MUTE_MAX_REFS)
@@ -204,126 +205,101 @@ export async function muteFindings(
   }
 
   const tokenId = ctx.token.tokenId
-  const requested = keys.length + graphIds.length
-  const reservation = reserveMuteBudget(tokenId, requested)
-  if (!reservation.allowed) {
-    throw new McpToolError(
-      `Refused (budget_exhausted): this token's daily mute budget is spent: ` +
-        `${reservation.used} of ${reservation.limit} ` +
-        `findings muted in the current window, and this call asked for ${requested} more. It ` +
-        `resets at ${reservation.resetsAt}. Nothing was muted. Report this to a person rather ` +
-        'than working around it.',
-      'budget_exhausted'
-    )
+  if (await activationBusy(projectId)) throw busy(ACTIVATION_BUSY)
+
+  let exemptPairs: [string, string][]
+  try {
+    const rows = await prisma.nodeFilterExemption.findMany({
+      where: { projectId },
+      select: { label: true, nodeKey: true },
+    })
+    exemptPairs = rows.map(r => [r.label, r.nodeKey])
+  } catch (err) {
+    console.error('[mcp] mute_findings could not read the exemptions:', err)
+    throw busy('the findings a person brought back could not be read, so they could not be protected')
   }
 
-  // What to give back when the call ends. Everything, unless something was
-  // muted or MAY have been.
-  let refund = requested
+  let result: { items: MuteManyItem[]; notFound: string[] }
   try {
-    if (await activationBusy(projectId)) throw busy(ACTIVATION_BUSY)
-
-    let exemptPairs: [string, string][]
-    try {
-      const rows = await prisma.nodeFilterExemption.findMany({
-        where: { projectId },
-        select: { label: true, nodeKey: true },
-      })
-      exemptPairs = rows.map(r => [r.label, r.nodeKey])
-    } catch (err) {
-      console.error('[mcp] mute_findings could not read the exemptions:', err)
-      throw busy('the findings a person brought back could not be read, so they could not be protected')
-    }
-
-    let result: { items: MuteManyItem[]; notFound: string[] }
-    try {
-      result = await muteMany(ctx.token.userId, projectId, {
-        keys, graphIds, exemptPairs, reason, tokenPrefix: ctx.token.tokenPrefix,
-      })
-    } catch (err) {
-      if (err instanceof McpToolError && err.code === 'mute_outcome_unknown') {
-        // It may have landed, so it counts, and the cached graph may be stale.
-        refund = 0
-        invalidateCache(projectId)
-        void writeAudit({
-          actorId: ctx.token.userId,
-          action: 'muted_nodes.muted',
-          targetType: 'project',
-          targetId: projectId,
-          after: {
-            tokenId, tokenPrefix: ctx.token.tokenPrefix, reason, outcome: 'unknown',
-            requested: { findingIds: keys, nodeIds: graphIds },
-          },
-          source: 'mcp',
-        })
-      }
-      throw err
-    }
-
-    if (result.items.some(i => i.outcome === 'muted')) invalidateCache(projectId)
-    const release = await releaseBroughtBack(
-      ctx.token.userId, projectId, result.items.filter(i => i.outcome === 'muted'))
-    // A finding released above is reported as the refusal it would have been
-    // had the write seen the person's exemption.
-    const items = result.items.map(i =>
-      release.released.has(pairKey(i.label, i.key)) ? { ...i, outcome: 'kept_visible' } : i)
-    const muted = items.filter(i => i.outcome === 'muted')
-    refund = Math.max(0, requested - muted.length)
-
-    const warnings = [
-      ...(await activationBusy(projectId)
-        ? ['A version activation started during this call, and these mutes may not survive it. ' +
-            'Re-check with search_muted_findings when it finishes.']
-        : []),
-      ...(release.warning ? [release.warning] : []),
-    ]
-    const warning = warnings.length > 0 ? warnings.join(' ') : undefined
-
-    void writeAudit({
-      actorId: ctx.token.userId,
-      action: 'muted_nodes.muted',
-      targetType: 'project',
-      targetId: projectId,
-      after: {
-        tokenId,
-        tokenPrefix: ctx.token.tokenPrefix,
-        reason,
-        count: muted.length,
-        items: items.slice(0, 100).map(i => ({ key: i.key ?? i.ref, label: i.label, outcome: i.outcome })),
-        ...(result.notFound.length ? { notFound: result.notFound.slice(0, 100) } : {}),
-      },
-      source: 'mcp',
+    result = await muteMany(ctx.token.userId, projectId, {
+      keys, graphIds, exemptPairs, reason, tokenPrefix: ctx.token.tokenPrefix,
     })
-
-    const nodeIdOf = (i: MuteManyItem) =>
-      typeof i.node_id === 'string' && NODE_ID_PATTERN.test(i.node_id) ? { nodeId: i.node_id } : {}
-    const budget = refundMuteBudget(tokenId, refund, reservation.windowStart)
-    refund = 0
-    return {
-      projectId,
-      muted: muted.map(i => ({
-        findingId: i.key, ...nodeIdOf(i), label: i.label, name: i.name, severity: i.severity,
-      })),
-      alreadyMuted: items
-        .filter(i => i.outcome === 'already_muted')
-        .map(i => ({ findingId: i.key, ...nodeIdOf(i), label: i.label, mutedVia: i.was_via })),
-      refused: items
-        .filter(i => ['proven', 'kept_visible', 'not_a_finding'].includes(i.outcome))
-        .map(i => ({ ref: i.ref, reason: i.outcome, label: i.label })),
-      notFound: result.notFound,
-      budget: budgetView(budget),
-      ...(warning ? { warning } : {}),
-      notes: [
-        'A muted finding is hidden from everyone, including you: no read here returns it except ' +
-          'search_muted_findings and list_muted_findings.',
-        'Each mute is marked as an agent\'s, with this token\'s prefix, and a person can undo it in ' +
-          'Muted Nodes.',
-        '"proven" and "kept_visible" are refusals a person decides on, in RedAmon. Do not retry them.',
-        'If every finding of a remediation is muted, the next triage run removes that remediation.',
-      ],
+  } catch (err) {
+    if (err instanceof McpToolError && err.code === 'mute_outcome_unknown') {
+      // It may have landed, so the cached graph may be stale.
+      invalidateCache(projectId)
+      void writeAudit({
+        actorId: ctx.token.userId,
+        action: 'muted_nodes.muted',
+        targetType: 'project',
+        targetId: projectId,
+        after: {
+          tokenId, tokenPrefix: ctx.token.tokenPrefix, reason, outcome: 'unknown',
+          requested: requestedForAudit(keys, graphIds),
+        },
+        source: 'mcp',
+      })
     }
-  } finally {
-    if (refund > 0) refundMuteBudget(tokenId, refund, reservation.windowStart)
+    throw err
+  }
+
+  if (result.items.some(i => i.outcome === 'muted')) invalidateCache(projectId)
+  const release = await releaseBroughtBack(
+    ctx.token.userId, projectId, result.items.filter(i => i.outcome === 'muted'))
+  // A finding released above is reported as the refusal it would have been
+  // had the write seen the person's exemption.
+  const items = result.items.map(i =>
+    release.released.has(pairKey(i.label, i.key)) ? { ...i, outcome: 'kept_visible' } : i)
+  const muted = items.filter(i => i.outcome === 'muted')
+
+  const warnings = [
+    ...(await activationBusy(projectId)
+      ? ['A version activation started during this call, and these mutes may not survive it. ' +
+          'Re-check with search_muted_findings when it finishes.']
+      : []),
+    ...(release.warning ? [release.warning] : []),
+  ]
+  const warning = warnings.length > 0 ? warnings.join(' ') : undefined
+
+  void writeAudit({
+    actorId: ctx.token.userId,
+    action: 'muted_nodes.muted',
+    targetType: 'project',
+    targetId: projectId,
+    after: {
+      tokenId,
+      tokenPrefix: ctx.token.tokenPrefix,
+      reason,
+      count: muted.length,
+      items: items.slice(0, AUDIT_MAX_REFS).map(i => ({ key: i.key ?? i.ref, label: i.label, outcome: i.outcome })),
+      ...(result.notFound.length ? { notFound: result.notFound.slice(0, AUDIT_MAX_REFS) } : {}),
+    },
+    source: 'mcp',
+  })
+
+  const nodeIdOf = (i: MuteManyItem) =>
+    typeof i.node_id === 'string' && NODE_ID_PATTERN.test(i.node_id) ? { nodeId: i.node_id } : {}
+  return {
+    projectId,
+    muted: muted.map(i => ({
+      findingId: i.key, ...nodeIdOf(i), label: i.label, name: i.name, severity: i.severity,
+    })),
+    alreadyMuted: items
+      .filter(i => i.outcome === 'already_muted')
+      .map(i => ({ findingId: i.key, ...nodeIdOf(i), label: i.label, mutedVia: i.was_via })),
+    refused: items
+      .filter(i => ['proven', 'kept_visible', 'not_a_finding'].includes(i.outcome))
+      .map(i => ({ ref: i.ref, reason: i.outcome, label: i.label })),
+    notFound: result.notFound,
+    ...(warning ? { warning } : {}),
+    notes: [
+      'A muted finding is hidden from everyone, including you: no read here returns it except ' +
+        'search_muted_findings and list_muted_findings.',
+      'Each mute is marked as an agent\'s, with this token\'s prefix, and a person can undo it in ' +
+        'Muted Nodes.',
+      '"proven" and "kept_visible" are refusals a person decides on, in RedAmon. Do not retry them.',
+      'If every finding of a remediation is muted, the next triage run removes that remediation.',
+    ],
   }
 }
 
@@ -335,7 +311,7 @@ export async function unmuteFindings(
   args: { findingIds?: string[]; nodeIds?: (string | number)[]; includeRuleMutes?: boolean }
 ) {
   requireScope(ctx.token, 'triage:mute')
-  enforceRate(ctx, 'write')
+  enforceRate(ctx, 'mute')
   await assertMcpProjectAccess(ctx.token.userId, projectId)
 
   const { keys, graphIds } = refsOf(args.findingIds, args.nodeIds, UNMUTE_MAX_REFS)
@@ -406,7 +382,7 @@ export async function unmuteFindings(
         actorId: userId, projectId, source: 'mcp', realActorUserId: null,
         tokenId: ctx.token.tokenId, tokenPrefix: ctx.token.tokenPrefix,
         items: [], exempted: exemptions.total, outcome: 'unknown',
-        requested: { findingIds: keys, nodeIds: graphIds },
+        requested: requestedForAudit(keys, graphIds),
       })
     } else {
       await removeExemptions(projectId, exemptions.created)

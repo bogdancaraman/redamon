@@ -43,13 +43,13 @@ import {
   MCP_TOKEN_PREFIX,
   bucketSpec,
   llmBudgetLimit,
-  muteBudgetLimit,
   type McpBucketName,
   type McpScope,
 } from '@/lib/mcpAuth'
 import { MCP_SCOPE_COPY } from '@/lib/mcp/scopeCopy'
 import { SCOPES_META_KEY, type ToolScopes } from '@/lib/mcp/server'
 import { FINDINGS_MAX_LIMIT } from '@/lib/mcp/findingTools'
+import { MUTE_MAX_REFS, UNMUTE_MAX_REFS } from '@/lib/mcp/muteTools'
 import { VERDICT_STATUSES } from '@/lib/mcp/verdictTools'
 import { MUTEABLE_FINDING_LABELS } from '@/lib/mcp/findingLabels'
 import {
@@ -728,7 +728,8 @@ function renderTokenPowers(tools: Tool[], scopes: readonly McpScope[]): string {
 const BUCKET_COPY: Record<McpBucketName, string> = {
   read: 'ordinary reads',
   query: 'natural-language questions and raw Cypher',
-  write: 'settings changes, verdicts, reviews, triage run starts and stops, mutes and unmutes',
+  write: 'settings changes, verdicts, reviews, triage run starts and stops',
+  mute: 'mutes and unmutes',
   start: 'starting a scan, counted PER PROJECT',
   exec: 'commands at the target',
   compare: 'version comparisons, counted per project',
@@ -749,14 +750,13 @@ function renderLimits(tools: Tool[], scopes: readonly McpScope[]): string {
   const muteLimits = canMute
     ? [
         '',
-        `Muting has its own daily budget: at most ${muteBudgetLimit()} findings a day per token, counted`,
-        'per finding. When it is spent, report it to a person rather than working around it.',
+        `One call mutes at most ${MUTE_MAX_REFS} findings and unmutes at most ${UNMUTE_MAX_REFS}. Report every`,
+        'mute you make, with its reason: a person reviews them in Muted Nodes.',
       ]
     : []
   const muteErrors = canMute
     ? [
         '| a mute or unmute outcome is unknown | Check the muted list before anything else. A retry is safe. |',
-        '| the daily mute budget is spent | Stop muting and report it. |',
       ]
     : []
   return [
@@ -774,7 +774,7 @@ function renderLimits(tools: Tool[], scopes: readonly McpScope[]): string {
     ...muteLimits,
     '',
     'Graph results are bounded, list tools page at ' + FINDINGS_MAX_LIMIT + ' rows, and one request',
-    'body may not exceed 64 KiB.',
+    'body may not exceed 1 MiB.',
     '',
     '### Errors, and the right response to each',
     '',
@@ -1186,7 +1186,7 @@ export function renderInlineOnboarding(
     out.push(
       '',
       'A mute (mute_findings) hides a finding from everyone. Only on your own evidence or a',
-      'person\'s request, always with a reason, within a daily budget.'
+      'person\'s request, always with a reason.'
     )
   }
 

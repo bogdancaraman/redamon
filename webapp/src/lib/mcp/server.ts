@@ -1353,10 +1353,8 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'proof, or confirmed by an attack chain) and `kept_visible` (a person unmuted it) are a ' +
         'person\'s call, in RedAmon; `not_a_finding` is an asset, which cannot be muted. An ' +
         'already-muted finding is reported under alreadyMuted and never changed.\n\n' +
-        'Every mute needs a reason people will read, is marked as an agent\'s with this token, and ' +
-        'counts against a per-token daily budget (`budget` in the result). A spent budget is ' +
-        '`budget_exhausted`: report it, do not work around it. Refused while the project\'s ' +
-        'graph is being swapped (`busy`).\n\n' +
+        'Every mute needs a reason people will read and is marked as an agent\'s with this token. ' +
+        'Refused while the project\'s graph is being swapped (`busy`).\n\n' +
         '`mute_outcome_unknown` means the answer was lost: check with search_muted_findings ' +
         '(mutedVia "mcp"), then retry; a retry is safe. Muting every finding of a remediation ' +
         'removes that remediation at the next triage run, and a finding muted after a version ' +
