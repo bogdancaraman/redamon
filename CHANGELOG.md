@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.24.3] - 2026-10-05
+
+### Added
+
+- **crt.name answers when crt.sh does not.** crt.sh is often down for hours. When it errors, times out or is paused, subdomain discovery and Origin Discovery now take their certificate hostnames from crt.name instead. crt.name is asked once per domain per run, stops for the run once its free quota (100 requests a day per IP) is spent, and is off whenever crt.sh is off.
+
+### Changed
+
+- **An MCP token can mute and unmute up to 5,000 findings in one call, with no daily cap.** It was 25 per mute, 100 per unmute and 200 mutes a day. Nothing now limits how many findings a token mutes in total. The other bounds stand: a reason on every mute, never a proven finding or one a person brought back, never over an existing mute, and every agent mute listed per token in Muted Nodes, where it is reverted in one go.
+- **Mutes and unmutes have their own rate limit:** 200 calls a minute per token (`MCP_RATE_MUTE_PER_MIN`). The other MCP writes stay at 10 a minute.
+- **Graph calls from MCP run 5 at a time by default,** up from 2 (`GRAPH_EXEC_MCP_CONCURRENCY`).
+- **The MCP endpoint accepts a request body of up to 1 MiB,** up from 64 KiB, so a 5,000-finding call fits.
+- **A large MCP mute takes about a second.** The graph write is now one pass over the project's findings; a pass per finding took minutes at 5,000.
+
+### Removed
+
+- **`MCP_MUTE_DAILY_BUDGET`.** A value left in `.env` is ignored, and `mute_findings` no longer answers with a `budget` or refuses with `budget_exhausted`.
+
 ## [6.24.2] - 2026-10-03
 
 ### Fixed
