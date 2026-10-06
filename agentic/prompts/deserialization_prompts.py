@@ -230,35 +230,55 @@ once you have the machineKey) before one that stays detection-only here
 out gadget chains under load.
 
 ================================================================================
-## Step 5 - Report the confirmation (fields are mandatory)
+## Step 5 - Record the confirmation (there is NO report tool - emit chain_findings)
 ================================================================================
-Report with action="report_finding" (or the finding tool for this run):
-- finding_type="vulnerability_confirmed"  (NOT the default "custom": only a
-  proof-typed finding promotes a candidate to T1; "custom" lands the edge but
-  never promotes).
-- When you confirmed a RECON candidate from PART A:
-  related_finding_ids=[<the EXACT candidate id captured in A1>]  (this is what
-  makes the orchestration MERGE (:ChainFinding)-[:CONFIRMS]->(candidate) and
-  promote it). Mistyped or cross-tenant ids match nothing silently.
-- When you FOUND a NEW sink in PART B that recon never flagged: there is no
-  candidate id to link, so omit related_finding_ids (or leave it empty) and
-  report it as a standalone confirmed finding.
-Put the oracle proof in the evidence: the OAST hit line timestamped within the
-same minute as your delivery, the REGISTERED_DOMAIN you issued, the transport and
-location, and the format. For a timing or error-based confirmation, include the
-two compared responses or the deserialization exception.
+Do NOT call a "report_finding" tool or action: none exists, and a phase will
+reject it. `chain_findings` is a FIELD of your output_analysis, not a tool, an
+action, a todo or a next step. Fill it in the SAME response whose output_analysis
+interprets the proof (the OAST poll that shows the hit, or the response that shows
+the error/timing differential). Never write "emit chain_findings" as a next step or
+a todo: when your output_analysis says the sink is confirmed, that same
+output_analysis must carry the entry. The orchestration reads it and writes the
+finding; a matching `related_finding_ids` is what MERGEs
+(:ChainFinding)-[:CONFIRMS]->(candidate) and promotes it.
+
+Add to output_analysis.chain_findings:
+```
+"chain_findings": [{{
+   "finding_type": "vulnerability_confirmed",   // MUST be this, NOT the default
+                                                 // "custom": only a proof-typed
+                                                 // finding promotes a candidate to
+                                                 // T1; "custom" lands the edge but
+                                                 // never promotes.
+   "severity": "high",
+   "title": "Insecure deserialization confirmed (<format> via <transport>)",
+   "evidence": "<OAST hit line timestamped within the same minute as delivery; the REGISTERED_DOMAIN you issued; transport + location; format; encoding layers. For a timing/error confirm, the two compared responses or the deserialization exception.>",
+   "related_finding_ids": ["<the EXACT candidate id captured in A1>"],
+   "confidence": 90
+}}]
+```
+- PART A (you confirmed a RECON candidate): `related_finding_ids` MUST be the
+  exact candidate id captured in A1. A mistyped or cross-tenant id matches
+  nothing silently - no CONFIRMS edge, no promotion.
+- PART B (you found a NEW sink recon never flagged): there is no candidate id to
+  link, so omit `related_finding_ids` (or leave it empty). It is recorded as a
+  standalone confirmed finding.
 
 ================================================================================
 ## Step 6 - VERIFY the handshake landed (only when you linked a candidate)
 ================================================================================
 The CONFIRMS writer is tenant-scoped and label-restricted and matches nothing
-silently on a wrong, mistyped or cross-tenant id. After reporting a PART A
+silently on a wrong, mistyped or cross-tenant id. After recording a PART A
 confirmation, re-query the candidate and verify an incoming CONFIRMS edge now
 exists:
 ```
 query_graph({{"query": "MATCH (cf:ChainFinding)-[:CONFIRMS]->(v:Vulnerability {{id:'<CANDIDATE_ID>'}}) RETURN cf.finding_type, v.id"}})
 ```
-If it is absent, re-report with the exact captured id. Never assume success.
+If it is absent, no earlier output_analysis carried the entry (or its id was
+wrong). Put the chain_findings entry, with the exact captured id, in the
+output_analysis of THIS response: every output_analysis can carry it, including the
+one that interprets this verification query. Do not re-run the verification query
+until you have done that. Never assume success.
 
 ================================================================================
 ## Dead ends and pivots (do not loop)
@@ -273,7 +293,7 @@ If it is absent, re-report with the exact captured id. Never assume success.
 - No signal on any of the three channels: report INCONCLUSIVE with what you tried,
   not a clean result.
 
-### When to transition phases    # action="request_phase_transition"
+### When to transition phases    # action="transition_phase"
 Confirm candidates in the informational phase with the OOB oracle. Request a phase
 transition only when an exec gadget is enabled AND a sink is confirmed.
 

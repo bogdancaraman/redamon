@@ -237,7 +237,7 @@ A single 404/500 on one guessed path is NOT "XXE ruled out."
 ### When to transition phases
 While in the informational phase, use recon tools to enumerate XML endpoints,
 upload points, and content-types. As soon as you have a concrete XML sink to
-attack, call `action="request_phase_transition"` to move to exploitation.
+attack, call `action="transition_phase"` to move to exploitation.
 
 ### Reporting guidelines
 Report: the vulnerable endpoint and parameter/field, the working oracle

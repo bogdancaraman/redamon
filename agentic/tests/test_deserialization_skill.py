@@ -151,6 +151,49 @@ class TestPromptTemplate(unittest.TestCase):
         self.assertIn("vulnerability_confirmed", out)
         self.assertIn("related_finding_ids", out)
 
+    def test_step5_records_via_chain_findings_not_a_report_action(self):
+        # The first E2E run failed here: the skill told the agent to use
+        # action="report_finding", which does not exist, so no CONFIRMS edge /
+        # T1 promotion ever landed. The real mechanism is a chain_findings entry
+        # in output_analysis. Pin both so the wrong action cannot creep back.
+        out = self._fmt()
+        self.assertIn("chain_findings", out)
+        self.assertNotIn('action="report_finding"', out)
+        self.assertNotIn("action='report_finding'", out)
+
+    def _section(self, out, start, end):
+        i = out.index(start)
+        return out[i:out.index(end, i)]
+
+    def test_step5_makes_chain_findings_a_field_of_the_same_response(self):
+        # The live re-run after the action fix: the model wrote "emit chain_findings"
+        # as a NEXT STEP / todo and never filled the field, so no CONFIRMS edge
+        # landed. Step 5 must say it is a field of the output_analysis that reads
+        # the proof, filled in that same response.
+        step5 = self._section(self._fmt(), "## Step 5", "## Step 6")
+        self.assertRegex(step5, r"(?i)field of your output_analysis")
+        self.assertRegex(step5, r"(?i)same response")
+        self.assertRegex(step5, r"(?i)never write .emit chain_findings. as a next step")
+
+    def test_step6_recovers_in_this_response_not_by_requerying(self):
+        # The same run then looped on the verification query four times.
+        step6 = self._section(self._fmt(), "## Step 6", "## Dead ends")
+        self.assertIn("THIS response", step6)
+        self.assertNotIn("re-report", step6)
+
+    def test_only_real_action_names_are_referenced(self):
+        # Every action= the skill names must be in the ActionType enum. The first
+        # run also carried action="request_phase_transition" (real name:
+        # transition_phase). A typo here is silently rejected at runtime.
+        import re
+        from state import ActionType
+        valid = set(ActionType.__args__)
+        out = self._fmt()
+        named = set(re.findall(r"""action=["']([a-z_]+)["']""", out))
+        self.assertTrue(named, "expected the skill to name at least one action")
+        self.assertEqual(named - valid, set(),
+                         f"skill names non-existent action(s): {named - valid}")
+
     def test_step6_verifies_the_confirms_edge(self):
         out = self._fmt()
         self.assertIn("CONFIRMS", out)
@@ -281,6 +324,13 @@ class TestAttackPathBehaviour(unittest.TestCase):
         self.assertIn("vulnerability_confirmed", out)
         self.assertNotIn("Follow the workflow guidance in the Available Tools section for attack path",
                          out)
+
+    def test_blurb_records_through_chain_findings_in_the_same_response(self):
+        from prompts.base import build_attack_path_behavior
+        out = build_attack_path_behavior("deserialization")
+        self.assertIn("chain_findings", out)
+        self.assertRegex(out, r"(?i)same response")
+        self.assertNotIn("report with", out)
 
 
 class TestFrontendArtifacts(unittest.TestCase):
