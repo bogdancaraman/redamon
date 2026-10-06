@@ -14,6 +14,7 @@ export const JEV_ENGINE_FIELDS = [
   'httpxJevPageType',
   'resourceEnumJevToolHealth',
   'hakrawlerJevSeedOrder',
+  'serializedScanJevRank',
 ] as const
 
 export type JevEngineField = typeof JEV_ENGINE_FIELDS[number]
@@ -27,6 +28,7 @@ export const JEV_HOOK_LABEL: Record<JevEngineField, string> = {
   httpxJevPageType: 'page-type labels',
   resourceEnumJevToolHealth: 'silent tool-failure check',
   hakrawlerJevSeedOrder: 'Hakrawler seed order',
+  serializedScanJevRank: 'serialized-scan ranking',
 }
 
 export const JEV_VERIFY_FAILED = "Couldn't verify your Jev token, try again."

@@ -87,7 +87,8 @@ describe('create_project: a Jev engine flag in settings', () => {
 })
 
 describe('create_project: a Jev-only hook flag in settings', () => {
-  test.each(['ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder'])(
+  test.each(['ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder',
+    'serializedScanJevRank'])(
     '%s without a token is refused and no project is created', async (field) => {
       await expect(createProject(ctx(), args({ [field]: true })))
         .rejects.toThrow(new RegExp(`${field}.*no TypeSafe AI \\(Jev\\) token`, 's'))

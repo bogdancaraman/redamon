@@ -86,7 +86,7 @@ describe('preflight_scope_check: the effective engine of each AI hook', () => {
     const r = await preflightScopeCheck(ctx(), 'p1')
     expect(r.aiHooks.map(x => x.hook)).toEqual([
       'ffuf_extensions', 'nuclei_tags', 'waf_classification', 'takeover_disambiguation',
-      'ffuf_base_paths', 'page_type', 'tool_health', 'crawl_seed_order',
+      'ffuf_base_paths', 'page_type', 'tool_health', 'crawl_seed_order', 'serialized_assess',
     ])
     expect(byHook(r).ffuf_extensions).toEqual(
       { hook: 'ffuf_extensions', kind: 'engine', engine: 'llm', effective: 'llm' })
@@ -96,9 +96,20 @@ describe('preflight_scope_check: the effective engine of each AI hook', () => {
     // It has no LLM engine: false means the step runs with no AI at all.
     h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true }))
     const r = await preflightScopeCheck(ctx(), 'p1')
-    for (const hook of ['ffuf_base_paths', 'page_type', 'tool_health', 'crawl_seed_order']) {
+    for (const hook of ['ffuf_base_paths', 'page_type', 'tool_health', 'crawl_seed_order',
+      'serialized_assess']) {
       expect(byHook(r)[hook]).toEqual({ hook, kind: 'enable', engine: 'off', effective: 'off' })
     }
+  })
+
+  test('the serialized-scan ranking reports Jev with a token and its fallback without one', async () => {
+    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, serializedScanJevRank: true }))
+    h.tokenCount.mockResolvedValue(1)
+    expect(byHook(await preflightScopeCheck(ctx(), 'p1')).serialized_assess)
+      .toEqual({ hook: 'serialized_assess', kind: 'enable', engine: 'jev', effective: 'jev' })
+    h.tokenCount.mockResolvedValue(0)
+    expect(byHook(await preflightScopeCheck(ctx(), 'p1')).serialized_assess.effective)
+      .toBe('jev → static fallback (no Jev token on the owner\'s account)')
   })
 
   test('a Jev-only hook switched on runs on Jev with a token, or its fallback without one', async () => {

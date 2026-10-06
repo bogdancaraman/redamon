@@ -56,7 +56,8 @@ beforeEach(() => {
 
 describe('the generated client knows every Jev column', () => {
   test.each(['ffufAiUseJev', 'nucleiTagsAiUseJev', 'wafAiUseJev', 'takeoverAiUseJev',
-    'ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder'])(
+    'ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder',
+    'serializedScanJevRank'])(
     '%s is a Project scalar', name => {
       expect(Object.values(Prisma.ProjectScalarFieldEnum)).toContain(name)
     })
@@ -95,7 +96,8 @@ describe('POST: a new project asking for the Jev engine', () => {
 })
 
 describe('POST: a new project turning on a Jev-only hook', () => {
-  test.each(['ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder'])(
+  test.each(['ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder',
+    'serializedScanJevRank'])(
     '%s without a token is refused and no project is created', async (field) => {
       const res = await POST(postReq({ ...base, [field]: true }))
       expect(res.status).toBe(400)
@@ -106,7 +108,7 @@ describe('POST: a new project turning on a Jev-only hook', () => {
   test('the form sends every Jev-only flag as false: no switch-on, no lookup', async () => {
     const res = await POST(postReq({
       ...base, ffufJevBasePaths: false, httpxJevPageType: false, resourceEnumJevToolHealth: false,
-      hakrawlerJevSeedOrder: false,
+      hakrawlerJevSeedOrder: false, serializedScanJevRank: false,
     }))
     expect(res.status).toBeLessThan(400)
     expect(mockTokenCount).not.toHaveBeenCalled()

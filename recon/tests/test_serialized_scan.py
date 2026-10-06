@@ -241,6 +241,76 @@ class TestScanner(unittest.TestCase):
         fmts = {f["deser_format"] for f in out["serialized_scan"]["findings"]}
         self.assertIn("native_java", fmts)
 
+    @staticmethod
+    def _form(found_at="https://t.example.test/account", action="/save", method="post", inputs=None):
+        return {"found_at": found_at, "action": action, "method": method,
+                "enctype": "application/x-www-form-urlencoded",
+                "inputs": inputs if inputs is not None else [
+                    {"name": "__VIEWSTATE", "type": "hidden", "value": "/wEPDwUKLTE5ODk="},
+                    {"name": "data", "type": "hidden",
+                     "value": '{"@class":"com.example.Widget","name":"x"}'},
+                    {"name": "q", "type": "text", "value": "plain"}]}
+
+    def test_hidden_form_fields_are_scanned(self):
+        # Live E2E finding: the crawler keeps forms with their field values, and the
+        # by_base_url endpoints keep none, so forms were a blind spot.
+        cr = {"resource_enum": {"forms": [self._form()]}}
+        found = {(f["deser_format"], f["deser_location"]): f
+                 for f in run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": True})
+                 ["serialized_scan"]["findings"]}
+        self.assertIn(("viewstate", "__VIEWSTATE"), found)
+        self.assertIn(("jackson_json", "data"), found)
+        f = found[("jackson_json", "data")]
+        self.assertEqual(f["endpoint_url"], "https://t.example.test/save")   # action, resolved
+        self.assertEqual(f["http_method"], "POST")
+        self.assertEqual(f["deser_transport"], "param")                      # the declared vocabulary
+        self.assertEqual((f["baseurl"], f["path"]), ("https://t.example.test", "/save"))
+        self.assertNotIn("q", {loc for _, loc in found})                      # plain field: no hit
+
+    def test_form_action_resolves_against_the_page_it_was_found_on(self):
+        cases = [("https://t.example.test/a/b/page", "next", "https://t.example.test/a/b/next"),
+                 ("https://t.example.test/a/page", "", "https://t.example.test/a/page"),
+                 ("https://t.example.test/x", "https://u.example.test/y", "https://u.example.test/y")]
+        for found_at, action, expected in cases:
+            with self.subTest(action=action):
+                cr = {"resource_enum": {"forms": [self._form(found_at=found_at, action=action)]}}
+                urls = {f["endpoint_url"] for f in run_serialized_scan(
+                    cr, {"SERIALIZED_SCAN_ENABLED": True})["serialized_scan"]["findings"]}
+                self.assertEqual(urls, {expected})
+
+    def test_a_field_named_like_a_sink_flags_even_when_empty(self):
+        cr = {"resource_enum": {"forms": [self._form(inputs=[
+            {"name": "__VIEWSTATE", "type": "hidden", "value": ""}])]}}
+        fmts = {f["deser_format"] for f in run_serialized_scan(
+            cr, {"SERIALIZED_SCAN_ENABLED": True})["serialized_scan"]["findings"]}
+        self.assertEqual(fmts, {"viewstate"})
+
+    def test_the_same_form_on_two_pages_is_one_candidate_per_field(self):
+        cr = {"resource_enum": {"forms": [
+            self._form(found_at="https://t.example.test/one"),
+            self._form(found_at="https://t.example.test/two")]}}
+        findings = run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": True})["serialized_scan"]["findings"]
+        keys = [normalizers.dedup_key(f) for f in findings]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual(sum(1 for f in findings if f["deser_location"] == "data"), 1)
+
+    def test_forms_respect_the_roe_exclusions(self):
+        cr = {"resource_enum": {"forms": [self._form()]}}
+        out = run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": True, "ROE_ENABLED": True,
+                                       "ROE_EXCLUDED_HOSTS": ["t.example.test"]})
+        self.assertEqual(out["serialized_scan"]["findings"], [])
+
+    def test_malformed_forms_never_raise(self):
+        for forms in ["not-a-list", {"a": 1}, [None, "x", 3],
+                      [{"found_at": 5, "action": None, "inputs": "nope"}],
+                      [{"found_at": "relative/only", "action": "", "inputs": []}],
+                      [self._form(inputs=[None, "x", {"name": 7}, {"name": "", "value": "rO0ABXNy"},
+                                          {"name": "v", "value": ["rO0AB"]}])]]:
+            with self.subTest(forms=str(forms)[:40]):
+                out = run_serialized_scan({"resource_enum": {"forms": forms}},
+                                          {"SERIALIZED_SCAN_ENABLED": True})
+                self.assertEqual(out["serialized_scan"]["findings"], [])
+
     def test_candidate_shape(self):
         cr = _corpus()
         out = run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": True})
@@ -298,6 +368,48 @@ class TestScanner(unittest.TestCase):
         self.assertEqual(cr, snapshot)              # input untouched
         self.assertIn("findings", payload)
         self.assertNotIn("serialized_scan", cr)     # not written back onto input
+
+    def test_one_value_is_one_candidate_per_format(self):
+        # Live E2E finding: base64 Java matched as `rO0AB` text AND as the decoded
+        # AC ED 00 05 bytes, so one param became two candidates, and confirming one
+        # left its twin pending. Each blob is 27 bytes, so its base64 needs no
+        # padding, with varied bytes: the decoder skips a low-entropy base64 run.
+        java = b"\xac\xed\x00\x05sr\x00\x13java.util.ArrayList"
+        cases = [
+            (base64.b64encode(java).decode(), "native_java", "base64 rO0AB (AC ED 00 05)", ["base64"]),
+            (java.hex(), "native_java", "hex aced0005", ["hex"]),
+            (base64.b64encode(b"\x80\x04\x95" + bytes(range(65, 89))).decode(), "python_pickle",
+             "base64 gASV (pickle proto 4/5)", ["base64"]),
+            (base64.b64encode(b"\x00\x01\x00\x00\x00\xff\xff\xff\xff" + bytes(range(97, 115))).decode(),
+             "dotnet_binaryformatter", "base64 AAEAAAD///// (BinaryFormatter)", ["base64"]),
+        ]
+        for value, fmt, magic, layers in cases:
+            with self.subTest(fmt=fmt, magic=magic):
+                cr = {"resource_enum": {"by_base_url": {"https://t.example.test": {"endpoints": {
+                    "/load": {"methods": ["GET"], "parameters": {
+                        "query": [{"name": "data", "sample_values": [value]}]}}}}}}}
+                findings = run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": True})[
+                    "serialized_scan"]["findings"]
+                self.assertEqual([(f["deser_format"], f["deser_magic"], f["deser_encoding_layers"])
+                                  for f in findings], [(fmt, magic, layers)])
+
+    def test_a_cookie_candidate_keeps_the_chain_its_value_decodes_through(self):
+        # The whole Set-Cookie header is scanned first and decodes to nothing; the
+        # candidate must still record the cookie value's base64 layer.
+        java = base64.b64encode(b"\xac\xed\x00\x05sr\x00\x13java.util.ArrayList").decode()
+        cr = {"http_probe": {"by_url": {"https://t/": {
+            "url": "https://t/", "content_type": "text/html",
+            "headers": {"set_cookie": f"sess={java}; Path=/; HttpOnly"}}}}}
+        findings = run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": True})["serialized_scan"]["findings"]
+        self.assertEqual([(f["deser_format"], f["deser_transport"], f["deser_encoding_layers"])
+                          for f in findings], [("native_java", "cookie", ["base64"])])
+
+    def test_two_formats_in_one_value_stay_two_candidates(self):
+        cr = {"resource_enum": {"forms": [self._form(inputs=[
+            {"name": "data", "type": "hidden", "value": '{"@class":"a.B","x":{"@type":"c.D"}}'}])]}}
+        fmts = sorted(f["deser_format"] for f in run_serialized_scan(
+            cr, {"SERIALIZED_SCAN_ENABLED": True})["serialized_scan"]["findings"])
+        self.assertEqual(fmts, ["fastjson", "jackson_json"])
 
     def test_layered_cookie_is_decoded(self):
         inner = b"\xac\xed\x00\x05" + b"Z" * 30

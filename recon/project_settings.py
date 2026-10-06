@@ -478,6 +478,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # ========== SERIALIZED OBJECT SCAN ==========
     # Passive, in-memory serialized-object detection; writes info candidates.
     'SERIALIZED_SCAN_ENABLED': False,
+    # Jev-only hook: gated at the call site with AI_IN_PIPELINE, so it stays out
+    # of apply_ai_pipeline_overrides (the master switch must not force it).
+    'SERIALIZED_SCAN_JEV_RANK': False,
 
     # ========== JS RECON SCANNER ==========
     'JS_RECON_ENABLED': False,
@@ -1564,6 +1567,7 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['SUPPLY_CHAIN_IMPORT_MAX_FILES'] = _env_int('SUPPLY_CHAIN_IMPORT_MAX_FILES', DEFAULT_SETTINGS['SUPPLY_CHAIN_IMPORT_MAX_FILES'])
     settings['SUPPLY_CHAIN_IMPORT_MAX_BYTES'] = _env_int('SUPPLY_CHAIN_IMPORT_MAX_BYTES', DEFAULT_SETTINGS['SUPPLY_CHAIN_IMPORT_MAX_BYTES'])
     settings['SERIALIZED_SCAN_ENABLED'] = project.get('serializedScanEnabled', DEFAULT_SETTINGS['SERIALIZED_SCAN_ENABLED'])
+    settings['SERIALIZED_SCAN_JEV_RANK'] = project.get('serializedScanJevRank', DEFAULT_SETTINGS['SERIALIZED_SCAN_JEV_RANK'])
     settings['JS_RECON_ENABLED'] = project.get('jsReconEnabled', DEFAULT_SETTINGS['JS_RECON_ENABLED'])
     settings['JS_RECON_MAX_FILES'] = project.get('jsReconMaxFiles', DEFAULT_SETTINGS['JS_RECON_MAX_FILES'])
     settings['JS_RECON_TIMEOUT'] = project.get('jsReconTimeout', DEFAULT_SETTINGS['JS_RECON_TIMEOUT'])

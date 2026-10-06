@@ -14,6 +14,7 @@ import { FfufSection } from './FfufSection'
 import { HttpxSection } from './HttpxSection'
 import { HakrawlerSection } from './HakrawlerSection'
 import { ResourceEnumAiSection } from './ResourceEnumAiSection'
+import { SerializedScanSection } from './SerializedScanSection'
 
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'u1' }) }))
 
@@ -24,6 +25,8 @@ const CASES = [
   { name: 'HttpxSection', Section: HttpxSection, field: 'httpxJevPageType', extra: { httpxEnabled: true } },
   { name: 'HakrawlerSection', Section: HakrawlerSection, field: 'hakrawlerJevSeedOrder', extra: { hakrawlerEnabled: true } },
   { name: 'ResourceEnumAiSection', Section: ResourceEnumAiSection, field: 'resourceEnumJevToolHealth', extra: {} },
+  { name: 'SerializedScanSection', Section: SerializedScanSection, field: 'serializedScanJevRank',
+    extra: { serializedScanEnabled: true, captureProxyEnabled: true } },
 ] as const
 
 function mount(Section: (typeof CASES)[number]['Section'], data: Data) {

@@ -332,6 +332,7 @@ describe('applyPresetSettings', () => {
     httpxJevPageType: true,
     resourceEnumJevToolHealth: true,
     hakrawlerJevSeedOrder: true,
+    serializedScanJevRank: true,
     naabuEnabled: false,
     katanaDepth: 9,
     sqliLevel: 5,
@@ -420,6 +421,7 @@ describe('applyPresetSettings', () => {
     expect(next.httpxJevPageType).toBe(true)
     expect(next.resourceEnumJevToolHealth).toBe(true)
     expect(next.hakrawlerJevSeedOrder).toBe(true)
+    expect(next.serializedScanJevRank).toBe(true)
   })
 
   test('a preset that names a Jev-only flag still sets it', () => {

@@ -40,6 +40,10 @@ _schema = _load("graph_db.schema",            "graph_db/schema.py")
 sys.modules.setdefault("graph_db", MagicMock())
 sys.modules["graph_db.schema"] = _schema
 sys.modules["graph_db.cpe_resolver"] = _cpe
+# base_mixin imports the prune keep-check from node_filters.guards (stdlib only);
+# with graph_db mocked it resolves only when the real module is pre-registered.
+sys.modules.setdefault("graph_db.node_filters", MagicMock())
+_load("graph_db.node_filters.guards", "graph_db/node_filters/guards.py")
 _base = _load("graph_db.mixins.base_mixin",   "graph_db/mixins/base_mixin.py")
 
 

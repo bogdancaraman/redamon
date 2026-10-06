@@ -113,7 +113,8 @@ describe('update_recon_settings: a stored Jev choice is not a reason to refuse',
 })
 
 describe('update_recon_settings: turning on a Jev-only hook', () => {
-  test.each(['ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder'])(
+  test.each(['ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder',
+    'serializedScanJevRank'])(
     '%s without a token is refused and nothing is written', async (field) => {
       await expect(updateReconSettings(ctx(), 'p1', { [field]: true }))
         .rejects.toThrow(new RegExp(`${field}.*no TypeSafe AI \\(Jev\\) token`, 's'))

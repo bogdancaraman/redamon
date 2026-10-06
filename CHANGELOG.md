@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Serialized-object detection with agent confirmation.** A new passive recon module flags insecure-deserialization sinks across every major family (native Java, polymorphic JSON/XML/YAML, PHP + PHAR, Python pickle, .NET BinaryFormatter / ViewState, Ruby Marshal) in response headers, `Set-Cookie` and enumerated parameters, bomb-safe and never deserializing, and writes info-severity `needs_agent_confirmation` candidates. The rewritten built-in **Insecure Deserialization** agent skill confirms them (or finds new sinks from scratch) with a non-destructive out-of-band oracle, then promotes the real ones on the Priority Board. Both halves default off.
+- **Serialized-object detection with agent confirmation.** A new passive recon module flags insecure-deserialization sinks across every major family (native Java, polymorphic JSON/XML/YAML, PHP + PHAR, Python pickle, .NET BinaryFormatter / ViewState, Ruby Marshal) in response headers, `Set-Cookie`, enumerated parameters and crawled form fields, bomb-safe and never deserializing, and writes info-severity `needs_agent_confirmation` candidates. The rewritten built-in **Insecure Deserialization** agent skill confirms them (or finds new sinks from scratch) with a non-destructive out-of-band oracle, then promotes the real ones on the Priority Board. Both halves default off.
 - **`ruby` and `viewgen` in the Kali sandbox,** so the Insecure Deserialization and RCE skills forge Ruby Marshal / Rails `secret_key_base` cookies and ASP.NET ViewState (known machineKey) end-to-end.
+- **Optional Jev ranking for serialized objects** (`serializedScanJevRank`, a Jev-only hook in the scan card and the AI-in-Pipeline panel, settable over MCP). With AI in Pipeline on and a Jev token, TypeSafe Jev is asked which format each flagged blob is and how likely it is to be an attacker-reachable sink. Ships in shadow: its answers are recorded in the recon output, and no candidate is changed or dropped.
 
 ## [6.24.3] - 2026-10-05
 

@@ -2,8 +2,8 @@
 
 Two kinds. The four engine switches (FFuf extensions, Nuclei tags, WAF, takeover)
 map their answers back to the existing `/llm/*` response shapes. The per-item
-hooks (FFuf base paths, page type, tool health, crawl-seed order) have no LLM
-twin and return shapes of their own, which recon validates.
+hooks (FFuf base paths, page type, tool health, crawl-seed order, serialized
+blobs) have no LLM twin and return shapes of their own, which recon validates.
 
 Containment here is code-enforced floors and closed answer sets, not prompt
 wording: a Jev answer can only rank, tune or annotate, never drop coverage
@@ -502,9 +502,98 @@ async def crawl_seed_order(key: str, hosts: list) -> dict:
             "model": JEV_MODEL}
 
 
+# ---------------------------------------------------------------------------
+# Serialized-object assessment
+# ---------------------------------------------------------------------------
+
+#: The closed format set: recon's deser_format vocabulary
+#: (serialized_assess.FORMATS) plus "none", for a blob that is not a serialized
+#: object. test_jev_catalog_contract.py holds the two equal, or recon would
+#: reject every answer naming a format it does not know.
+SERIALIZED_FORMATS = (
+    "native_java", "jackson_json", "fastjson", "xmldecoder", "xstream", "snakeyaml",
+    "hessian", "php_serialize", "phar", "python_pickle", "dotnet_binaryformatter",
+    "viewstate", "ruby_marshal", "none",
+)
+SERIALIZED_TRANSPORTS = ("cookie", "header", "param", "body")
+SERIALIZED_LAYERS = ("url", "base64", "gzip", "zlib", "hex", "truncated")
+
+#: Tool-controlled wording, so it may sit in the instructions; the blob itself is
+#: only ever state data.
+_SERIALIZED_FORMAT_GUIDE = (
+    "native_java = Java ObjectInputStream binary (AC ED 00 05, base64 rO0AB); "
+    "jackson_json = JSON naming a Java class in an @class key (Jackson, json-io, Genson); "
+    "fastjson = Alibaba FastJSON naming a type in an @type key; "
+    "xmldecoder = java.beans.XMLDecoder XML (<java version=, <object class=); "
+    "xstream = XStream XML whose elements are fully-qualified Java classes; "
+    "snakeyaml = YAML with a !! Java type tag; "
+    "hessian = Hessian or Burlap binary RPC serialization; "
+    "php_serialize = PHP serialize() output (O:<n>:\"Class\" or a:<n>:{); "
+    "phar = a PHP PHAR archive or a phar:// reference; "
+    "python_pickle = a Python pickle opcode stream; "
+    "dotnet_binaryformatter = a .NET BinaryFormatter stream (00 01 00 00 00 FF FF FF FF); "
+    "viewstate = an ASP.NET __VIEWSTATE (LosFormatter / ObjectStateFormatter); "
+    "ruby_marshal = Ruby Marshal (04 08); "
+    "none = not a serialized object at all (an opaque token, an id or plain data)"
+)
+
+_BLOB_SNIPPET_CHARS = 200
+_BLOB_MAGIC_CHARS = 64
+
+
+def _blob_state(blob: dict) -> dict:
+    """One blob's state: recon's closed values plain, every target-derived string wrapped."""
+    transport = blob.get("transport")
+    layers = blob.get("encoding_layers") if isinstance(blob.get("encoding_layers"), list) else []
+    return {
+        "transport": transport if transport in SERIALIZED_TRANSPORTS else "",
+        "encoding_layers": [x for x in layers if x in SERIALIZED_LAYERS],
+        "location": wrap_untrusted(_clip(blob.get("location"), _PAGE_FIELD_CHARS), label="TARGET_PARAM"),
+        "magic": wrap_untrusted(_clip(blob.get("magic"), _BLOB_MAGIC_CHARS), label="TARGET_MARKER"),
+        "snippet": wrap_untrusted(_clip(blob.get("snippet"), _BLOB_SNIPPET_CHARS), label="TARGET_BLOB"),
+    }
+
+
+async def serialized_classify(key: str, blobs: list) -> dict:
+    """Assess each blob: `{"labels": [{"format", "format_confidence", "exploitability"}], "model"}`.
+
+    One request per blob, sequential and all-or-nothing, like `page_type`:
+    measured live on jev-1.13.0, per-item answers blur when several items share
+    one state. Two questions per blob: which format it is (a choice over the
+    closed set, carrying its own confidence) and whether it is likely an
+    attacker-reachable deserialization sink (a noul). Recon only annotates and
+    ranks with these; it never drops a candidate or rewrites its format.
+    """
+    questions = {
+        "format": {
+            "type": "choice",
+            "instructions": ("Which serialization format is the blob in the state? "
+                             + _SERIALIZED_FORMAT_GUIDE + "."),
+            "criteria": {fmt: None for fmt in SERIALIZED_FORMATS},
+        },
+        "exploitable": _noul(
+            "The serialized object in the state is likely to reach a server-side "
+            "deserializer from input an attacker controls: it travels in a request the "
+            "client can tamper with (a cookie, parameter, header or body field) and its "
+            "format can carry attacker-chosen types or objects.",
+            true="An attacker-reachable deserialization sink",
+            false="Not attacker-reachable, or not deserialized on the server"),
+    }
+    labels = []
+    for blob in blobs:
+        answers = await _ask(key, {"blob": _blob_state(blob)}, questions)
+        labels.append({
+            "format": answers["format"]["choice"],
+            "format_confidence": round(answers["format"]["confidence"] * 100),
+            "exploitability": round(answers["exploitable"]["noul"] * 100),
+        })
+    return {"labels": labels, "model": JEV_MODEL}
+
+
 __all__ = [
     "JevError", "JEV_MAX_QUESTIONS_PER_CALL", "FFUF_JEV_CATALOG",
     "ffuf_extensions", "nuclei_tags", "waf_classify", "takeover_classify",
     "FFUF_BASE_PATHS_MAX", "PAGE_CLASSES", "TOOL_HEALTH_TOOLS", "CRAWL_SEED_HOSTS_MAX",
-    "ffuf_base_paths", "page_type", "tool_health", "crawl_seed_order",
+    "SERIALIZED_FORMATS", "SERIALIZED_TRANSPORTS", "SERIALIZED_LAYERS",
+    "ffuf_base_paths", "page_type", "tool_health", "crawl_seed_order", "serialized_classify",
 ]

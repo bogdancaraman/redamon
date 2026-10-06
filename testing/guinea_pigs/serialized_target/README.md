@@ -27,9 +27,33 @@ viewstate, ruby_marshal`) plus decode-and-recurse layers (`base64(gzip)`,
 [`payloads.py`](payloads.py) for how each blob is built.
 
 The blobs are **inert detection fixtures** -- byte prefixes and structural
-markers only, no gadget, no class graph, no code execution. `validate_payloads.py`
-(host-side, in the session scratchpad) proves each one trips the exact published
-signature before a live run.
+markers only, no gadget, no class graph, no code execution. `validate_jev_e2e.py`
+(below) proves each one is flagged by a live recon run.
+
+## End-to-end case test (with the Jev ranking)
+
+`validate_jev_e2e.py` drives the whole thing through the inbound MCP server, the way
+an external agent would. It reads `MCP_SERVER_TOKEN` from the repo `.env` and never
+prints it; the token's owner needs a TypeSafe Jev token.
+
+```bash
+cd testing/guinea_pigs/serialized_target
+python3 validate_jev_e2e.py setup               # project + Jev toggles + start_recon
+python3 validate_jev_e2e.py verify <projectId>  # once the recon has finished
+```
+
+`setup` checks that `describe_recon_settings` lists `serializedScanJevRank`, that a
+fresh project stores it false, that `update_recon_settings` switches it on and off
+with `preflight_scope_check` following (`serialized_assess`: off, jev, off), then
+creates an internal IP-mode project on this lab and starts the recon. `verify` checks
+that every family in `live_in_memory_formats` is a `serialized_scan` candidate in the
+graph (the others ride only in a deeper endpoint's response header or `Set-Cookie`,
+which the in-memory corpus never holds, so they are reported as a known gap; see
+`expected_results.yaml`), that no sink is flagged twice for one format, that the recon
+output holds `jev_shadow.serialized_assess` (shadow rollout,
+model `jev-1.13.0`, decisions, no fallback, closed-set answers), and that shadow left
+the candidates unannotated. It prints Jev's agreement with the signatures per
+format without asserting it: measuring that is what shadow mode is for.
 
 ## Wiring
 

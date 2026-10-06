@@ -7,6 +7,9 @@ import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
+import { AiToggleLabel } from '../AiToggleLabel'
+import { JevEngineControl } from '../JevEngineControl'
+import { useHasJevProvider } from '@/hooks/useHasJevProvider'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -26,6 +29,7 @@ interface SerializedScanSectionProps {
  */
 export function SerializedScanSection({ data, updateField, onRun }: SerializedScanSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
+  const jevStatus = useHasJevProvider()
 
   const d = data as unknown as {
     serializedScanEnabled?: boolean
@@ -89,6 +93,30 @@ export function SerializedScanSection({ data, updateField, onRun }: SerializedSc
             an info-severity candidate the agent&apos;s deserialization skill confirms with a non-destructive
             out-of-band oracle.
           </p>
+
+          <div className={styles.toggleRow} style={{ alignItems: 'center', gap: 'var(--space-2)' }}>
+            <AiToggleLabel
+              label="Rank candidates with Jev"
+              tooltip={
+                'Jev is asked, per distinct flagged blob, which serialization format it is and how ' +
+                'likely it is to be an attacker-reachable sink, to rank the candidates for the ' +
+                "agent's confirmation. Annotates and ranks only: it never drops a candidate or changes " +
+                'the format the signatures matched. Ships in shadow mode: Jev is asked and its ' +
+                'agreement is recorded in the recon output, while the candidates stay as the ' +
+                'signatures flagged them. Needs Serialized Object Scan on. Same switch as in the ' +
+                'Target tab AI panel. ' +
+                (!data.aiInPipeline ? 'Enable "AI in Pipeline" in the Target tab to use this.' : '')
+              }
+            />
+            <JevEngineControl
+              variant="jevOnly"
+              value={data.serializedScanJevRank}
+              enabled={data.aiInPipeline}
+              jevStatus={jevStatus}
+              disabledHint='Enable "AI in Pipeline" in the Target tab to turn this on.'
+              onSelect={(on) => updateField('serializedScanJevRank', on)}
+            />
+          </div>
 
           {enabled && !deserSkillOn && (
             <p className={`${styles.fieldHint} ${styles.fieldHintCaution}`} role="alert">

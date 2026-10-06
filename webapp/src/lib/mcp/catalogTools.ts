@@ -157,11 +157,14 @@ const NOTES = [
     'aiPipelineModel, true = TypeSafe Jev), and switching one ON is refused unless the project ' +
     'owner has a Jev token. preflight_scope_check reports each hook\'s effective engine.',
   'Jev-only hooks have TWO levels: aiInPipeline, then the hook\'s own *Jev* flag (ffufJevBasePaths, ' +
-    'httpxJevPageType, resourceEnumJevToolHealth, hakrawlerJevSeedOrder). They have no LLM engine, ' +
-    'aiInPipeline does not set or reset them, and switching one ON is refused unless the project ' +
-    'owner has a Jev token. Page types, base paths and seed order take effect from Jev\'s answers ' +
-    '(page-type labels land on the Endpoint, FFuf fuzzes Jev\'s directories, Hakrawler crawls Jev\'s ' +
-    'host order); the tool-health check records its verdict in the recon output.',
+    'httpxJevPageType, resourceEnumJevToolHealth, hakrawlerJevSeedOrder, serializedScanJevRank). ' +
+    'They have no LLM engine, aiInPipeline does not set or reset them, and switching one ON is ' +
+    'refused unless the project owner has a Jev token. Page types, base paths and seed order take ' +
+    'effect from Jev\'s answers (page-type labels land on the Endpoint, FFuf fuzzes Jev\'s ' +
+    'directories, Hakrawler crawls Jev\'s host order); the tool-health check records its verdict in ' +
+    'the recon output, and the serialized-scan ranking (needs serializedScanEnabled too) runs in ' +
+    'shadow: Jev is asked about each flagged blob and its agreement is recorded in the recon output ' +
+    'under jev_shadow.serialized_assess, while the candidates stay as the signatures flagged them.',
 ]
 
 /**

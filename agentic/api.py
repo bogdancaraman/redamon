@@ -26,7 +26,7 @@ from fastapi import Depends, FastAPI, File, Form, Query, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from langchain_core.messages import SystemMessage, HumanMessage
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from llm_guard import (master_key_is_weak, require_internal_auth,
                        require_internal_auth_only, require_master_internal_auth)
@@ -1376,6 +1376,28 @@ class CrawlSeedOrderRequest(BaseModel):
     project_id: Optional[str] = None
 
 
+class SerializedBlobItem(BaseModel):
+    snippet: str = Field(default="", max_length=200)
+    magic: str = Field(default="", max_length=64)
+    transport: Literal["cookie", "header", "param", "body", ""] = ""
+    location: str = Field(default="", max_length=300)
+    encoding_layers: List[Literal["url", "base64", "gzip", "zlib", "hex", "truncated"]] = Field(
+        default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def _has_signal(self):
+        # Never ask Jev about nothing: recon filters these out, this refuses them.
+        if not self.snippet and not self.magic:
+            raise ValueError("a blob needs a snippet or a magic marker")
+        return self
+
+
+class SerializedClassifyRequest(BaseModel):
+    blobs: List[SerializedBlobItem] = Field(min_length=1, max_length=50)
+    user_id: Optional[str] = None
+    project_id: Optional[str] = None
+
+
 @app.post("/jev/ffuf-base-paths", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
 async def jev_ffuf_base_paths(body: FfufBasePathsRequest):
     import jev_hooks
@@ -1411,6 +1433,16 @@ async def jev_crawl_seed_order(body: CrawlSeedOrderRequest):
     return await _run_jev(
         "crawl-seed-order", body.user_id or "", body.project_id or "", len(body.hosts),
         lambda key: jev_hooks.crawl_seed_order(key, [h.model_dump() for h in body.hosts]),
+    )
+
+
+@app.post("/jev/serialized-classify", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
+async def jev_serialized_classify(body: SerializedClassifyRequest):
+    import jev_hooks
+    return await _run_jev(
+        "serialized-classify", body.user_id or "", body.project_id or "",
+        len(body.blobs) * 2,
+        lambda key: jev_hooks.serialized_classify(key, [b.model_dump() for b in body.blobs]),
     )
 
 

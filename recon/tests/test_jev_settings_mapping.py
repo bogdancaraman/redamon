@@ -16,7 +16,7 @@ from recon.tests.golden_settings import _defaults_row
 from recon.tests.golden_settings_runner import resolve
 
 JEV_ONLY_COLUMNS = ("ffufJevBasePaths", "httpxJevPageType", "resourceEnumJevToolHealth",
-                    "hakrawlerJevSeedOrder")
+                    "hakrawlerJevSeedOrder", "serializedScanJevRank")
 
 
 def _runtime_key(column: str) -> str:
@@ -33,8 +33,8 @@ def test_a_jev_only_column_set_true_turns_on_exactly_its_runtime_key(column):
             assert settings[_runtime_key(other)] is False, other
 
 
-def test_all_four_true_yield_four_runtime_keys_true_even_with_ai_in_pipeline_off():
+def test_every_jev_only_column_true_stays_true_even_with_ai_in_pipeline_off():
     """aiInPipeline gates them at each call site; the resolve path never resets them."""
     settings = resolve({**_defaults_row(), "aiInPipeline": False,
                         **{c: True for c in JEV_ONLY_COLUMNS}})
-    assert [settings[_runtime_key(c)] for c in JEV_ONLY_COLUMNS] == [True] * 4
+    assert [settings[_runtime_key(c)] for c in JEV_ONLY_COLUMNS] == [True] * len(JEV_ONLY_COLUMNS)

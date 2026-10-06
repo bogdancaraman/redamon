@@ -47,6 +47,10 @@ TOOL_HEALTH_BODY = {"tool": "katana", "return_code": 0, "elapsed_s": 3.5, "seed_
 CRAWL_SEED_BODY = {"hosts": [{"hostname": "a.example.test", "title": "x"},
                              {"hostname": "b.example.test"}],
                    "user_id": "u1", "project_id": "p1"}
+SERIALIZED_BODY = {"blobs": [{"snippet": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA", "magic": "rO0AB",
+                              "transport": "cookie", "location": "session",
+                              "encoding_layers": ["base64"]}],
+                   "user_id": "u1", "project_id": "p1"}
 
 
 @pytest.fixture(scope="module")
@@ -100,6 +104,7 @@ PATHS = {
     "/jev/page-type": PAGE_TYPE_BODY,
     "/jev/tool-health": TOOL_HEALTH_BODY,
     "/jev/crawl-seed-order": CRAWL_SEED_BODY,
+    "/jev/serialized-classify": SERIALIZED_BODY,
 }
 
 
@@ -197,6 +202,44 @@ def test_waf_success_shape(client):
     assert resp.status_code == 200
     assert resp.json() == {"waf_detected": True, "waf_type": "cloudflare", "confidence": 90,
                            "reasoning": "", "source": "jev_classifier"}
+
+
+def test_serialized_success_shape(client):
+    answers = {"format": {"type": "choice", "choice": "native_java", "confidence": 0.87},
+               "exploitable": {"type": "noul", "noul": 0.62}}
+    with _owner_ok(), _providers([JEV_ROW]), \
+            patch("jev_client.system_one", AsyncMock(return_value={"model": "jev-1.13.0", "answers": answers})):
+        resp = _post(client, "/jev/serialized-classify", SERIALIZED_BODY)
+    assert resp.status_code == 200
+    assert resp.json() == {"labels": [{"format": "native_java", "format_confidence": 87,
+                                       "exploitability": 62}],
+                           "model": "jev-1.13.0"}
+    assert CANARY not in resp.text
+
+
+def test_serialized_blob_with_no_signal_is_422_and_never_reaches_jev(client):
+    body = {**SERIALIZED_BODY, "blobs": [{"snippet": "", "magic": "", "transport": "cookie"}]}
+    with patch("jev_client.system_one", AsyncMock()) as jev:
+        resp = _post(client, "/jev/serialized-classify", body)
+    assert resp.status_code == 422
+    jev.assert_not_called()
+
+
+@pytest.mark.parametrize("blob", [
+    {"snippet": "rO0AB", "transport": "smtp"},             # transport outside the closed set
+    {"snippet": "rO0AB", "encoding_layers": ["rot13"]},    # layer outside the closed set
+    {"snippet": "x" * 201},                                # longer than recon ever sends
+    {"snippet": "rO0AB", "encoding_layers": ["url"] * 9},  # more layers than the bound
+])
+def test_serialized_blob_outside_the_closed_sets_or_bounds_is_422(client, blob):
+    resp = _post(client, "/jev/serialized-classify", {**SERIALIZED_BODY, "blobs": [blob]})
+    assert resp.status_code == 422
+
+
+def test_serialized_more_blobs_than_the_bound_is_422(client):
+    blob = SERIALIZED_BODY["blobs"][0]
+    resp = _post(client, "/jev/serialized-classify", {**SERIALIZED_BODY, "blobs": [blob] * 51})
+    assert resp.status_code == 422
 
 
 def test_owner_binding_runs_before_the_token_fetch(client):

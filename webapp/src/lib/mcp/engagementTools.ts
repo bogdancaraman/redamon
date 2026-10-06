@@ -538,6 +538,7 @@ const AI_HOOKS = [
   { hook: 'page_type', engineField: 'httpxJevPageType', kind: 'enable' },
   { hook: 'tool_health', engineField: 'resourceEnumJevToolHealth', kind: 'enable' },
   { hook: 'crawl_seed_order', engineField: 'hakrawlerJevSeedOrder', kind: 'enable' },
+  { hook: 'serialized_assess', engineField: 'serializedScanJevRank', kind: 'enable' },
 ] as const
 
 /**

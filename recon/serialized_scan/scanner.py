@@ -2,11 +2,12 @@
 
 Passive, deterministic, no DB, no network, and it NEVER deserializes. It reads
 only what the pipeline already holds in memory -- response headers + Set-Cookie
-(http_probe ``by_url``) and enumerated endpoints/parameters (resource_enum
-``by_base_url``) -- runs every value through the bomb-safe decode-and-recurse
-normalizer, and matches the family signatures. Each hit becomes one
-:Vulnerability candidate (needs_agent_confirmation=true, severity=info) that the
-agent's deserialization skill confirms out of band.
+(http_probe ``by_url``), enumerated endpoints/parameters (resource_enum
+``by_base_url``) and the crawled forms' fields (resource_enum ``forms``) -- runs
+every value through the bomb-safe decode-and-recurse normalizer, and matches the
+family signatures. Each format a value carries becomes one :Vulnerability
+candidate (needs_agent_confirmation=true, severity=info) that the agent's
+deserialization skill confirms out of band.
 
 Request-side blobs (POST bodies, request cookies) are not in the in-memory slice
 (bodies are popped at http_probe.py:2051); that gap is the agent's half.
@@ -16,7 +17,7 @@ from __future__ import annotations
 
 import copy
 import re
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from recon.serialized_scan import decoders, normalizers, signatures
 
@@ -67,35 +68,39 @@ def _host_excluded(url: str, roe_excluded: list) -> bool:
 
 
 def _scan_value(value, transport: str, location: str, ctx: dict, sink) -> None:
-    """Decode-and-recurse one value, emitting a finding per signature hit.
+    """Decode-and-recurse one value, emitting one finding per format it carries.
 
-    ``sink`` is called with a fully built finding dict for each unique hit.
+    A value often matches one family twice: base64 Java shows ``rO0AB`` on its
+    surface and ``AC ED 00 05`` once decoded. That is one sink, so it is one
+    candidate; two would leave a twin pending after the agent confirms the other.
+    The hit kept is the one under the longest decode chain, which tells the agent
+    how to re-encode a payload (a whole Set-Cookie header decodes to nothing, the
+    cookie value inside it does), and the first one on a tie.
     """
     if not isinstance(value, str) or not value:
         return
-    seen_here: set = set()
+    best: dict = {}
     for token in _candidate_tokens(value):
         decoded = decoders.decode_layers(token)
         chain = list(decoded["encoding_chain"])
         if decoded["truncated"]:
             chain.append("truncated")
         for layer in decoded["layers"]:
-            hits = signatures.scan_text(layer["text"]) + signatures.scan_bytes(layer["raw"])
-            for hit in hits:
-                key = (hit["format"], hit["magic"])
-                if key in seen_here:
-                    continue
-                seen_here.add(key)
-                sink(normalizers.build_finding(
-                    endpoint_url=ctx["endpoint_url"],
-                    http_method=ctx["http_method"],
-                    baseurl=ctx["baseurl"],
-                    path=ctx["path"],
-                    transport=transport,
-                    location=location,
-                    hit=hit,
-                    encoding_layers=chain,
-                ))
+            for hit in signatures.scan_text(layer["text"]) + signatures.scan_bytes(layer["raw"]):
+                kept = best.get(hit["format"])
+                if kept is None or len(chain) > len(kept[1]):
+                    best[hit["format"]] = (hit, chain)
+    for hit, chain in best.values():
+        sink(normalizers.build_finding(
+            endpoint_url=ctx["endpoint_url"],
+            http_method=ctx["http_method"],
+            baseurl=ctx["baseurl"],
+            path=ctx["path"],
+            transport=transport,
+            location=location,
+            hit=hit,
+            encoding_layers=chain,
+        ))
 
 
 def _scan_http_probe(combined_result: dict, roe_excluded: list, sink) -> None:
@@ -176,6 +181,43 @@ def _scan_resource_enum(combined_result: dict, roe_excluded: list, sink) -> None
                 _scan_value(pname, "param", pname, ctx, sink)
                 for val in sample_values:
                     _scan_value(val, "param", pname, ctx, sink)
+
+
+def _scan_forms(combined_result: dict, roe_excluded: list, sink) -> None:
+    """Crawled forms: hidden inputs are a classic carrier (ViewState, a serialized
+    `data` field), and the client sends them back to the form's action, so a sink
+    there receives them. The by_base_url endpoints keep no field values, so this is
+    the only place the corpus holds them. A field is a `param` whatever the method,
+    as the body-position parameters above are; the method rides in http_method.
+    """
+    forms = (combined_result.get("resource_enum") or {}).get("forms") or []
+    if not isinstance(forms, list):
+        return
+    for form in forms:
+        if not isinstance(form, dict):
+            continue
+        found_at = form.get("found_at") if isinstance(form.get("found_at"), str) else ""
+        action = form.get("action") if isinstance(form.get("action"), str) else ""
+        target = urljoin(found_at, action) if found_at else action
+        parsed = urlparse(target)
+        if not parsed.scheme or not parsed.netloc or _host_excluded(target, roe_excluded):
+            continue
+        ctx = {
+            "endpoint_url": f"{parsed.scheme}://{parsed.netloc}{parsed.path or '/'}",
+            "http_method": str(form.get("method") or "GET").upper(),
+            "baseurl": f"{parsed.scheme}://{parsed.netloc}",
+            "path": parsed.path or "/",
+        }
+        inputs = form.get("inputs")
+        for field in inputs if isinstance(inputs, list) else []:
+            if not isinstance(field, dict):
+                continue
+            name = field.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            # A field NAMED like a sink (__VIEWSTATE) is a signal even when empty.
+            _scan_value(name, "param", name, ctx, sink)
+            _scan_value(field.get("value"), "param", name, ctx, sink)
 
 
 def _endpoint_method(endpoint: dict) -> str:
@@ -264,10 +306,17 @@ def run_serialized_scan(combined_result: dict, settings: dict) -> dict:
 
         _scan_http_probe(combined_result, roe_excluded, sink)
         _scan_resource_enum(combined_result, roe_excluded, sink)
+        _scan_forms(combined_result, roe_excluded, sink)
     except Exception as e:  # noqa: BLE001 - never-raise contract (plan §5.2)
         print(f"[!][SerializedScan] Error: {e}")
         combined_result["serialized_scan"] = normalizers.build_result([])
         return combined_result
+
+    # Optional Jev assessment (AI in pipeline). Hooked here, in the entry the full
+    # pipeline and partial recon share, so both inherit it. Annotates and ranks
+    # only, never raises, never drops a candidate.
+    from recon.helpers.ai_planner import serialized_assess
+    serialized_assess.run_for_scan(findings, settings, combined_result)
 
     combined_result["serialized_scan"] = normalizers.build_result(findings)
     if findings:

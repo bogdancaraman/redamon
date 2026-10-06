@@ -6,11 +6,13 @@
  * Run: npx vitest run src/components/projects/ProjectForm/sections/SerializedScanSection.test.tsx
  */
 import type { ReactNode } from 'react'
-import { describe, test, expect, vi, afterEach } from 'vitest'
+import { describe, test, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { SerializedScanSection } from './SerializedScanSection'
 
 vi.mock('../NodeInfoTooltip', () => ({ NodeInfoTooltip: () => null }))
+// The Jev ranking control looks up the acting user's Jev token.
+vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'u1' }) }))
 vi.mock('next/link', () => ({ default: ({ children }: { children: ReactNode }) => <a>{children}</a> }))
 vi.mock('@/components/ui', () => ({
   Toggle: ({ checked, onChange, ...rest }: { checked: boolean; onChange: (v: boolean) => void }) => (
@@ -19,7 +21,10 @@ vi.mock('@/components/ui', () => ({
   ),
 }))
 
-afterEach(cleanup)
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })))
+})
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 function renderSection(data: Record<string, unknown>) {
   const updateField = vi.fn()

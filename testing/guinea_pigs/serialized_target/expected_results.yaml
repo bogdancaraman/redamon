@@ -1,7 +1,7 @@
 # Expected recon serialized_scan results for the serialized_target guinea pig.
 # One row per serialization family the module (recon/serialized_scan/signatures.py)
-# must flag. Validated offline against the exact signatures by
-# validate_payloads.py, and end-to-end by a live recon run against 172.25.0.92.
+# must flag. Validated end to end by validate_jev_e2e.py: a live recon run against
+# 172.25.0.92, driven through MCP, that also checks the Jev ranking hook.
 #
 # Each live hit becomes a :Vulnerability candidate with:
 #   source=serialized_scan, vulnerability_type=insecure_deserialization,
@@ -10,7 +10,17 @@
 target_ip: 172.25.0.92
 host_alias: http://localhost:9092
 
-required_formats:   # the 13 families that MUST all be detected
+# What a LIVE recon run can see. The in-memory corpus holds response headers only
+# for the probed root URL, plus crawled query parameters and form fields; a blob in a
+# deeper endpoint's response header or Set-Cookie is never in it (the capture-corpus
+# read that would carry those is the plan's deferred Option C). So a live run flags
+# exactly the families this lab ALSO exposes in a link or a form:
+live_in_memory_formats:
+  - native_java     # the /api/load?data= link on the landing page
+  - viewstate       # the /api/state?__VIEWSTATE= link, and the /forms/aspnet hidden field
+  - jackson_json    # the /forms/aspnet hidden `data` field
+
+required_formats:   # the 13 families the signatures MUST detect (unit tests, synthetic corpora)
   - native_java
   - hessian
   - jackson_json

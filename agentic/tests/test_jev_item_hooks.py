@@ -1,4 +1,5 @@
-"""`jev_hooks` per-item hooks: FFuf base paths, page type, tool health, crawl-seed order.
+"""`jev_hooks` per-item hooks: FFuf base paths, page type, tool health, crawl-seed order,
+serialized blobs.
 
 These hooks have no /llm/* twin, and their items (directory names, pages, hosts)
 are target data. This locks in:
@@ -373,3 +374,122 @@ def test_the_largest_page_stays_far_under_the_request_budget():
     for c in calls:
         assert len(json.dumps(c["state"])) <= 10_000
         assert len(c["questions"]) == len(jev_hooks.PAGE_CLASSES)
+
+
+# ---------------------------------------------------------------------------
+# serialized_classify: one blob per request, a closed choice plus one noul
+# ---------------------------------------------------------------------------
+
+BLOB = {"snippet": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA", "magic": "rO0AB",
+        "transport": "cookie", "location": "session", "encoding_layers": ["base64"]}
+
+
+def _serialized_fake(fmt="native_java", conf=0.8, noul=0.6, calls=None):
+    """A fake system_one answering the format choice and the reachability noul."""
+    async def fake(key, model, state, questions):
+        if calls is not None:
+            calls.append({"state": state, "questions": questions})
+        return {"model": model, "answers": {
+            "format": {"type": "choice", "choice": fmt, "confidence": conf},
+            "exploitable": {"type": "noul", "noul": noul}}}
+    return fake
+
+
+def test_serialized_asks_a_closed_choice_and_one_noul_with_fixed_wording():
+    hostile = dict(BLOB, snippet=HOSTILE, location=HOSTILE, magic=HOSTILE[:60])
+    calls = []
+    with patch("jev_client.system_one", _serialized_fake(calls=calls)):
+        _run(jev_hooks.serialized_classify(KEY, [hostile]))
+    qs = calls[0]["questions"]
+    assert set(qs) == {"format", "exploitable"}
+    assert qs["format"]["type"] == "choice"
+    assert set(qs["format"]["criteria"]) == set(jev_hooks.SERIALIZED_FORMATS)
+    assert qs["exploitable"]["type"] == "noul"
+    assert HOSTILE not in _instructions(calls)
+    assert HOSTILE[:60] not in _instructions(calls)
+
+
+def test_serialized_formats_carry_none_and_no_duplicates():
+    assert "none" in jev_hooks.SERIALIZED_FORMATS
+    assert len(set(jev_hooks.SERIALIZED_FORMATS)) == len(jev_hooks.SERIALIZED_FORMATS)
+
+
+def test_serialized_state_wraps_every_target_string_and_keeps_closed_values_plain():
+    calls = []
+    with patch("jev_client.system_one", _serialized_fake(calls=calls)):
+        _run(jev_hooks.serialized_classify(KEY, [BLOB]))
+    item = calls[0]["state"]["blob"]
+    for field, label in [("location", "TARGET_PARAM"), ("magic", "TARGET_MARKER"),
+                         ("snippet", "TARGET_BLOB")]:
+        assert item[field].startswith(f"<<<UNTRUSTED_{label} id="), field
+    assert item["transport"] == "cookie"
+    assert item["encoding_layers"] == ["base64"]
+
+
+def test_serialized_state_drops_values_outside_the_closed_sets():
+    """The request model refuses these; the builder drops them too, as a second floor."""
+    calls = []
+    odd = dict(BLOB, transport="smtp", encoding_layers=["rot13", "url", "base64"])
+    with patch("jev_client.system_one", _serialized_fake(calls=calls)):
+        _run(jev_hooks.serialized_classify(KEY, [odd]))
+    item = calls[0]["state"]["blob"]
+    assert item["transport"] == ""
+    assert item["encoding_layers"] == ["url", "base64"]
+
+
+def test_serialized_state_is_clipped_before_it_is_wrapped():
+    # q and w are not hex digits, so the wrapper's nonce cannot add to their counts.
+    big = dict(BLOB, snippet="q" * 10_000, location="w" * 10_000)
+    calls = []
+    with patch("jev_client.system_one", _serialized_fake(calls=calls)):
+        _run(jev_hooks.serialized_classify(KEY, [big]))
+    item = calls[0]["state"]["blob"]
+    assert item["snippet"].count("q") == jev_hooks._BLOB_SNIPPET_CHARS
+    assert item["location"].count("w") == jev_hooks._PAGE_FIELD_CHARS
+    assert "<<<END_UNTRUSTED_TARGET_BLOB id=" in item["snippet"]
+
+
+@pytest.mark.parametrize("fmt,conf,noul,expected", [
+    ("native_java", 0.87, 0.62, {"format": "native_java", "format_confidence": 87, "exploitability": 62}),
+    ("none", 0.95, 0.0, {"format": "none", "format_confidence": 95, "exploitability": 0}),
+    ("viewstate", 1.0, 1.0, {"format": "viewstate", "format_confidence": 100, "exploitability": 100}),
+    ("ruby_marshal", 0.0, 0.5, {"format": "ruby_marshal", "format_confidence": 0, "exploitability": 50}),
+])
+def test_serialized_answer_mapping_is_closed_and_in_range(fmt, conf, noul, expected):
+    with patch("jev_client.system_one", _serialized_fake(fmt=fmt, conf=conf, noul=noul)):
+        out = _run(jev_hooks.serialized_classify(KEY, [BLOB]))
+    assert out == {"labels": [expected], "model": jev_hooks.JEV_MODEL}
+    assert out["labels"][0]["format"] in set(jev_hooks.SERIALIZED_FORMATS)
+
+
+def test_each_blob_is_asked_about_in_its_own_request_in_order():
+    blobs = [dict(BLOB, location=f"cookie_{i}") for i in range(4)]
+    calls = []
+
+    async def fake(key, model, state, questions):
+        calls.append(state)
+        hit = "cookie_2" in state["blob"]["location"]
+        return {"model": model, "answers": {
+            "format": {"type": "choice", "choice": "viewstate" if hit else "native_java", "confidence": 0.9},
+            "exploitable": {"type": "noul", "noul": 0.9 if hit else 0.1}}}
+
+    with patch("jev_client.system_one", fake):
+        out = _run(jev_hooks.serialized_classify(KEY, blobs))
+    assert len(calls) == 4 and all(set(c) == {"blob"} for c in calls)
+    assert [lab["format"] for lab in out["labels"]] == ["native_java", "native_java", "viewstate", "native_java"]
+    assert [lab["exploitability"] for lab in out["labels"]] == [10, 10, 90, 10]
+
+
+def test_a_failed_blob_request_fails_the_whole_call():
+    n = {"i": 0}
+
+    async def fake(key, model, state, questions):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise JevError("jev_timeout")
+        return await _serialized_fake()(key, model, state, questions)
+
+    with patch("jev_client.system_one", fake):
+        with pytest.raises(JevError):
+            _run(jev_hooks.serialized_classify(KEY, [BLOB, BLOB, BLOB]))
+    assert n["i"] == 2

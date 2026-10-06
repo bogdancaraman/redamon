@@ -251,6 +251,7 @@ export const reconPresetSchema = z.object({
 
   // -- Serialized object scan (passive, in-memory) --
   serializedScanEnabled: bool,
+  serializedScanJevRank: bool,
 
   // -- JS Analysis: JS Recon --
   jsReconEnabled: bool,
@@ -808,6 +809,7 @@ export const RECON_PARAMETER_CATALOG = `
 
 ## Serialized object scan (passive, in-memory)
 - serializedScanEnabled: boolean - Scan the response headers, Set-Cookie and enumerated parameters the pipeline already holds for serialized-object signatures (native Java, polymorphic JSON/XML/YAML, PHP, Python pickle, .NET BinaryFormatter/ViewState, Ruby Marshal, Hessian). Passive and in-memory: no extra traffic, never deserializes. Writes info-severity :Vulnerability candidates the agent's deserialization skill confirms out of band. Best paired with the HTTP capture proxy (TrafficMind) so the agent has request-side traffic to confirm against. Good fit for web-app and API presets.
+- serializedScanJevRank: boolean - Ask TypeSafe AI Jev (jev-1.13.0), per distinct flagged blob, which serialization format it is and how likely it is to be an attacker-reachable sink, to rank the serialized-object candidates for the agent. Only when aiInPipeline=true and serializedScanEnabled=true; needs a Jev token on the owner's account. Annotates and ranks only: never drops a candidate. Default false.
 
 ## JavaScript Analysis - JS Recon (deep)
 - jsReconEnabled: boolean - Run deep JS analysis

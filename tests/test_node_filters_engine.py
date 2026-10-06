@@ -69,8 +69,8 @@ class TestTheCatalog(unittest.TestCase):
         self.assertEqual(set(CAT.kinds_for_enabled_phases()), {
             "vuln.nuclei", "vuln.security_check", "vuln.waf_bypass", "vuln.nmap_nse",
             "vuln.takeover", "vuln.vhost_sni", "vuln.cache_poisoning", "vuln.graphql",
-            "vuln.ai_surface", "vuln.passive_cve", "vuln.osv", "js.finding", "secret",
-            "malpackage",
+            "vuln.ai_surface", "vuln.passive_cve", "vuln.osv", "vuln.serialized_scan",
+            "js.finding", "secret", "malpackage",
         })
 
     def test_the_muteable_labels_match_the_triage_mixin(self):

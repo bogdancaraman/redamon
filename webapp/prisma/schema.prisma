@@ -890,6 +890,10 @@ model Project {
   // polymorphic JSON, XML, YAML, PHP, Python, .NET, Ruby, Hessian). Writes
   // info-severity :Vulnerability candidates the agent confirms out of band.
   serializedScanEnabled       Boolean  @default(false) @map("serialized_scan_enabled")
+  // Jev-only hook (no LLM twin): ranks the flagged candidates and classifies an
+  // ambiguous blob's format. Annotates only, never drops a candidate; effective
+  // only with aiInPipeline, which does not reset it.
+  serializedScanJevRank       Boolean  @default(false) @map("serialized_scan_jev_rank")
   // Adversarial AI surface recon Phase 6 — detect AI/LLM SDK imports,
   // hard-coded provider keys, dangerouslyAllowBrowser flags, and AI-frontend
   // product markers inside discovered JS bundles. Pure regex over data

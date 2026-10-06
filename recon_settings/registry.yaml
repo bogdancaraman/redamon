@@ -7992,6 +7992,28 @@ fields:
       .NET, Ruby, Hessian, polymorphic JSON/XML/YAML), never deserializes, and
       writes info-severity :Vulnerability candidates for the agent's
       deserialization skill to confirm out of band.
+  serializedScanJevRank:
+    tool: serialized_scan
+    runtime_key: "SERIALIZED_SCAN_JEV_RANK"
+    unit: none
+    phase: js_recon
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    group: llm
+    meaning: >-
+      Assesses the serialized-object candidates with TypeSafe AI Jev (model
+      jev-1.13.0): false leaves them as the deterministic signatures flagged
+      them, true asks Jev, per distinct blob, which serialization format it is
+      and how likely it is to be an attacker-reachable sink, to rank the
+      candidates for the agent's confirmation. Annotates and ranks only: it never
+      drops a candidate and never changes the format the signatures matched.
+      Takes effect only when aiInPipeline is true, and aiInPipeline does not
+      reset it. Needs a Jev token on the project owner's account; without one
+      the deterministic order stands. Ships in shadow mode: Jev is asked and its
+      agreement recorded in the recon output, while the candidates stay as the
+      signatures produced them. No traffic to the target: at most 200 distinct
+      blobs per scan, within 60 seconds.
   shodanDomainDns:
     tool: shodan
     runtime_key: "SHODAN_DOMAIN_DNS"

@@ -17,7 +17,7 @@ const CHANGED_EVENT = 'redamon:jev-provider-changed'
 /**
  * Tell every mounted Jev lookup that the token was added, replaced or removed.
  *
- * One form holds several lookups (the Target AI panel and the four tool sections);
+ * One form holds several lookups (the Target AI panel and each tool section with a Jev hook);
  * without this, saving the token in one would leave the others reading "no token"
  * until the page reloads.
  */

@@ -12,6 +12,7 @@ Stdlib only; runs on port 80. Not safe to expose to an untrusted network.
 
 from __future__ import annotations
 
+import html
 import os
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -63,7 +64,7 @@ _ASPNET_FORM = f"""<!doctype html>
 <form method="post" action="/forms/aspnet">
 <input type="hidden" name="__VIEWSTATE" value="{P.VIEWSTATE.split('=', 1)[1]}">
 <input type="hidden" name="__EVENTVALIDATION" value="/wEWAgKM54rGBgKfy5">
-<input type="hidden" name="data" value="{P.JACKSON_JSON}">
+<input type="hidden" name="data" value="{html.escape(P.JACKSON_JSON, quote=True)}">
 <input type="submit" value="go">
 </form>
 </body></html>""".encode("utf-8")
