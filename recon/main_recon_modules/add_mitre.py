@@ -19,12 +19,15 @@ Enriches:
 """
 
 import gzip
+import io
 import json
 import os
+import re
+import shutil
 import uuid
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 import requests
 
 # Default settings for MITRE enrichment (used when no settings provided)
@@ -102,8 +105,9 @@ def mark_database_updated(settings: Optional[Dict] = None):
     marker_file.write_text(datetime.now().isoformat())
 
 
-def _atomic_write_bytes(dest_path: Path, data: bytes) -> None:
-    """Write via a sibling temp file + os.replace, so a failure never truncates dest.
+def _atomic_write(dest_path: Path, write: Callable[[Path], None]) -> None:
+    """Let `write` fill a sibling temp file, then os.replace it over dest_path, so
+    a failure never truncates dest.
 
     The replaced file keeps the old one's mode and owner: these files are
     tracked in the host checkout that recon/ is bind-mounted from, and a
@@ -116,7 +120,7 @@ def _atomic_write_bytes(dest_path: Path, data: bytes) -> None:
     """
     tmp = dest_path.with_name(f".{dest_path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        tmp.write_bytes(data)
+        write(tmp)
         try:
             st = dest_path.stat()
             os.chmod(tmp, st.st_mode & 0o7777)
@@ -129,6 +133,25 @@ def _atomic_write_bytes(dest_path: Path, data: bytes) -> None:
             tmp.unlink()
         except OSError:
             pass
+
+
+def _atomic_write_bytes(dest_path: Path, data: bytes) -> None:
+    _atomic_write(dest_path, lambda tmp: tmp.write_bytes(data))
+
+
+_GUNZIP_CHUNK_BYTES = 256 * 1024
+
+
+def _atomic_write_gunzip(dest_path: Path, gz_data: bytes) -> None:
+    """Inflate a gzip payload into dest_path chunk by chunk, atomically.
+
+    A current-year file inflates to ~1 GB and grows daily (CVE-2026), so
+    gzip.decompress would hold the whole of it in the scan container's RAM.
+    """
+    def write(tmp: Path) -> None:
+        with gzip.GzipFile(fileobj=io.BytesIO(gz_data)) as src, open(tmp, "wb") as out:
+            shutil.copyfileobj(src, out, _GUNZIP_CHUNK_BYTES)
+    _atomic_write(dest_path, write)
 
 
 def download_file(url: str, dest_path: Path) -> bool:
@@ -508,7 +531,7 @@ def download_cve_database_year(db_path: Path, year: int) -> bool:
         print(f"[*][MITRE] Downloading: {filename}.gz...", end=" ", flush=True)
         response = requests.get(gz_url, timeout=60)
         response.raise_for_status()
-        _atomic_write_bytes(dest, gzip.decompress(response.content))
+        _atomic_write_gunzip(dest, response.content)
         print("OK")
         return True
     except Exception as e:
@@ -674,7 +697,7 @@ class MITREDatabase:
         self.cwe_db: Dict = {}               # cwe_id -> {parent CWEs, related CAPECs}
         self.cwe_metadata: Dict = {}         # cwe_id -> {name, abstraction, mapping}
         self.capec_metadata: Dict = {}       # capec_id -> {description, severity, etc.}
-        self.cve_cache: Dict = {}            # year -> {cve_id -> data}
+        self.cve_cache: Dict = {}            # year -> {cve_id -> byte offset of its line}
         self._loaded = False
 
     def load_resources(self) -> bool:
@@ -711,39 +734,41 @@ class MITREDatabase:
             print(f"[!][MITRE] Error loading resources: {e}")
             return False
 
-    def load_cve_year(self, year: int) -> Dict:
-        """Load CVE data for a specific year."""
+    def _cve_file(self, year: int) -> Path:
+        return self.db_path / "database" / f"CVE-{year}.jsonl"
+
+    def index_cve_year(self, year: int) -> Dict[str, int]:
+        """CVE ID -> byte offset of its line in the year file, built in one pass.
+
+        Upstream year files run to ~1 GB (CVE-2026), and parsing one into a dict
+        takes 5-8x its size in RAM, more than a scan container has. A run
+        enriches a handful of CVEs, so only the offsets are kept and
+        get_cve_data parses just the lines it is asked for.
+        """
         if year in self.cve_cache:
             return self.cve_cache[year]
 
-        cve_file = self.db_path / "database" / f"CVE-{year}.jsonl"
+        cve_file = self._cve_file(year)
         if not cve_file.exists():
             print(f"[!][MITRE] CVE database for {year} not found")
             return {}
 
-        year_data = {}
+        index: Dict[str, int] = {}
         try:
-            with open(cve_file, 'r') as f:
+            with open(cve_file, 'rb') as f:
+                offset = 0
                 for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            entry = json.loads(line)
-                            # Format is {"CVE-XXXX-YYYY": {"CWE": [...], "CAPEC": [...], "TECHNIQUES": [...]}}
-                            # The CVE ID is the key, not a field value
-                            for cve_id, cve_data in entry.items():
-                                if cve_id.upper().startswith("CVE-"):
-                                    year_data[cve_id.upper()] = cve_data
-                        except json.JSONDecodeError:
-                            continue
+                    for cve_id in _line_cve_ids(line):
+                        index[cve_id] = offset
+                    offset += len(line)
 
-            self.cve_cache[year] = year_data
-            print(f"[*][MITRE] Loaded {len(year_data)} CVEs from {year}")
+            self.cve_cache[year] = index
+            print(f"[*][MITRE] Loaded {len(index)} CVEs from {year}")
 
         except Exception as e:
             print(f"[!][MITRE] Error loading {year}: {e}")
 
-        return year_data
+        return index
 
     def get_cve_data(self, cve_id: str) -> Optional[Dict]:
         """Get data for a specific CVE ID."""
@@ -756,9 +781,38 @@ class MITREDatabase:
         except (ValueError, IndexError):
             return None
 
-        # Load year data if not cached
-        year_data = self.load_cve_year(year)
-        return year_data.get(cve_id)
+        offset = self.index_cve_year(year).get(cve_id)
+        if offset is None:
+            return None
+        try:
+            with open(self._cve_file(year), 'rb') as f:
+                f.seek(offset)
+                entry = json.loads(f.readline())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(entry, dict):
+            return None
+        # Matching the key again also refuses a line from a file replaced since indexing.
+        return next((data for key, data in entry.items() if key.upper() == cve_id), None)
+
+
+#: A year-file line's key, read without parsing the line. Upstream writes one CVE
+#: per line: {"CVE-2026-0544": {"CWE": [...], "CAPEC": [...], "TECHNIQUES": [...]}}.
+_LINE_CVE_KEY = re.compile(rb'\s*\{\s*"(CVE-\d+-\d+)"\s*:', re.IGNORECASE)
+
+
+def _line_cve_ids(line: bytes) -> List[str]:
+    """The CVE IDs a year-file line holds, upper-cased; [] for a blank or bad line."""
+    m = _LINE_CVE_KEY.match(line)
+    if m:
+        return [m.group(1).decode().upper()]
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return []
+    if not isinstance(entry, dict):
+        return []
+    return [key.upper() for key in entry if key.upper().startswith("CVE-")]
 
 
 # =============================================================================
