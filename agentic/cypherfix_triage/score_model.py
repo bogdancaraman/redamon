@@ -535,6 +535,10 @@ CONFIDENCE_BY_SOURCE = {
     "osv": 0.9,
     "retirejs": 0.9,
     "sourcemap": 0.4,
+    # unproven static signature: serialization is present and reachable, not
+    # exploitable. Low on purpose so the info gate's T4 floor keeps it low until
+    # the agent's proof-typed CONFIRMS edge promotes it (never an accidental 0.75).
+    "serialized_scan": 0.4,
     "guarddog": 0.25,
     # never-validated secrets
     "github_hunt": 0.6,

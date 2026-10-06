@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
-import { notMuted } from '@/lib/graphMute'
+import { notMuted, agentCandidateConfirmedOrNA } from '@/lib/graphMute'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
     // Q1: Vulnerability severity distribution
     const sevResult = await session.run(
       `MATCH (v:Vulnerability {project_id: $pid})
-       WHERE ${notMuted('v')}
+       WHERE ${notMuted('v')} AND ${agentCandidateConfirmedOrNA('v')}
        RETURN v.severity AS severity, count(v) AS count`,
       { pid: projectId }
     )
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
     // Q2: Top vulnerability types
     const typesResult = await session.run(
       `MATCH (v:Vulnerability {project_id: $pid})
-       WHERE ${notMuted('v')}
+       WHERE ${notMuted('v')} AND ${agentCandidateConfirmedOrNA('v')}
        RETURN v.name AS name, v.severity AS severity, v.source AS source, count(v) AS count
        ORDER BY count DESC LIMIT 20`,
       { pid: projectId }
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
     // Covers: HAS_VULNERABILITY (from IP/BaseURL/Subdomain/Domain), FOUND_AT (DAST→Endpoint)
     const findingsResult = await session.run(
       `MATCH (v:Vulnerability {project_id: $pid})
-       WHERE ${notMuted('v')}
+       WHERE ${notMuted('v')} AND ${agentCandidateConfirmedOrNA('v')}
        OPTIONAL MATCH (parent)-[:HAS_VULNERABILITY]->(v)
        OPTIONAL MATCH (v)-[:FOUND_AT]->(ep:Endpoint)
        OPTIONAL MATCH (v)-[:AFFECTS_PARAMETER]->(param:Parameter)

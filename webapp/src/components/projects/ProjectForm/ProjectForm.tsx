@@ -73,6 +73,7 @@ import { CypherFixSettingsSection } from './sections/CypherFixSettingsSection'
 import { RoeSection } from './sections/RoeSection'
 import { OsintEnrichmentSection } from './sections/OsintEnrichmentSection'
 import { JsReconSection } from './sections/JsReconSection'
+import { SerializedScanSection } from './sections/SerializedScanSection'
 import { GraphqlScanSection } from './sections/GraphqlScanSection'
 import { TakeoverSection } from './sections/TakeoverSection'
 import { VhostSniSection } from './sections/VhostSniSection'
@@ -1226,6 +1227,7 @@ export function ProjectForm({
         {activeTab === 'jsrecon' && viewMode === 'tabs' && (
           <>
             <JsReconSection data={formData} updateField={updateField} projectId={projectId} mode={mode} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('JsRecon') : undefined} />
+            <SerializedScanSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('SerializedScan') : undefined} />
             <SupplyChainReconSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('SupplyChainRecon') : undefined} />
           </>
         )}

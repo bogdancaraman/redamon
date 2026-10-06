@@ -544,6 +544,21 @@ def build_attack_path_behavior(attack_path_type):
             "Script byte-level attacks in Python, never hand-guess; then action='complete' after recovering "
             "or forging the trusted value."
         )
+    elif attack_path_type == "deserialization":
+        return (
+            "In informational phase: REUSE RECON FIRST. query_graph for pending serialized-object "
+            "candidates (source='serialized_scan', needs_agent_confirmation=true, no incoming CONFIRMS "
+            "edge) with ORDER BY v.id and an explicit LIMIT, and CAPTURE each candidate's id plus its "
+            "deser_* metadata. Pull the original request with the traffic tools rather than re-crawling; "
+            "if there are no candidates, fingerprint cookies/headers/body fields for the serialization "
+            "signatures, then act.\n"
+            "In exploitation: confirm with a NON-DESTRUCTIVE out-of-band oracle (Java URLDNS, Python "
+            "pickle-DNS, etc.) before any code-execution gadget. On a confirmed candidate, report with "
+            "finding_type='vulnerability_confirmed' AND related_finding_ids=[the exact captured id] so the "
+            "candidate promotes, then re-query to VERIFY the CONFIRMS edge landed (a wrong id matches "
+            "nothing silently). Exec gadgets are gated off by default; action='complete' after the oracle "
+            "proof unless an operator enabled them."
+        )
     elif attack_path_type.startswith("user_skill:"):
         return (
             "Follow the attack skill workflow guidance provided in the Available Tools section.\n"

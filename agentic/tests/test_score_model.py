@@ -198,7 +198,7 @@ class TestSourceCoverage(unittest.TestCase):
         "sourcemap", "guarddog", "shodan", "shodan_api", "internetdb",
         "criminalip", "netlas", "censys", "fofa", "zoomeye", "uncover",
         "urlscan", "otx", "vulners", "nvd", "wappalyzer", "typosquat",
-        "takeover_scan", "cache_poisoning", "graphql_scan", "graphql_cop",
+        "takeover_scan", "cache_poisoning", "serialized_scan", "graphql_scan", "graphql_cop",
         "ai_surface_recon", "ai_attack", "wcvs", "vuln_scan", "http_probe",
         "origin_discovery", "vhost_sni_enum", "resource_enum", "github_hunt",
         "github", "github_experimental", "git", "filesystem", "trufflehog",

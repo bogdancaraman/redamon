@@ -25,6 +25,7 @@ from graph_db.mixins.recon.resource_mixin import ResourceMixin
 from graph_db.mixins.recon.js_recon_mixin import JsReconMixin
 from graph_db.mixins.recon.user_input_mixin import UserInputMixin
 from graph_db.mixins.recon.takeover_mixin import TakeoverMixin
+from graph_db.mixins.recon.serialized_mixin import SerializedScanMixin
 from graph_db.mixins.recon.vhost_sni_mixin import VhostSniMixin
 from graph_db.mixins.recon.ai_surface_recon_mixin import AiSurfaceReconMixin
 from graph_db.mixins.recon.triage_mixin import TriageMixin
@@ -40,6 +41,7 @@ class ReconMixin(
     JsReconMixin,
     UserInputMixin,
     TakeoverMixin,
+    SerializedScanMixin,
     VhostSniMixin,
     AiSurfaceReconMixin,
     TriageMixin,

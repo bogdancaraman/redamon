@@ -23,6 +23,7 @@ import {
 import { MUTEABLE_FINDING_LABELS } from '@/lib/mcp/findingLabels'
 import { pickProjectColumns } from '@/lib/projectColumns'
 import { jevImportWarnings } from '@/lib/reconSettings/jevEngine'
+import { validateSerializedScanChange } from '@/lib/reconSettings/serializedScanGate'
 
 const MUTEABLE_LABELS = new Set<string>(MUTEABLE_FINDING_LABELS)
 
@@ -759,7 +760,11 @@ export async function POST(request: NextRequest) {
 
     // Kept as imported, not refused: a bundle exported from an account with a
     // Jev token must still import elsewhere. The warning says what will fall back.
-    const warnings = await jevImportWarnings(projectFields, userId)
+    const warnings = [
+      ...await jevImportWarnings(projectFields, userId),
+      // Serialized scan on without the capture proxy: warn, never block (§4.1).
+      ...validateSerializedScanChange(null, projectFields),
+    ]
 
     return NextResponse.json({
       success: true,

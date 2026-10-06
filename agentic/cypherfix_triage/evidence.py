@@ -301,7 +301,11 @@ def _build(finding: dict, clean: bool) -> str:
 #: - security_check findings are FACTS (a header is present or it is not);
 #: - an OSV advisory's evidence is the advisory text, not anything about the
 #:   target, so the model would be reviewing NVD rather than this project.
-SKIP_REVIEW_SOURCES = frozenset({"security_check", "osv", "retirejs"})
+#: - serialized_scan candidates are pre-confirmation leads: a thin static
+#:   signature bundle, and a false_positive review could wrongly flip a candidate
+#:   the agent has not yet confirmed. The agent's proof-typed CONFIRMS edge is the
+#:   intended promotion path, not the built-in reviewer.
+SKIP_REVIEW_SOURCES = frozenset({"security_check", "osv", "retirejs", "serialized_scan"})
 
 
 def person_decided(status, source) -> bool:

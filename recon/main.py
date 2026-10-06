@@ -1303,6 +1303,18 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             print(f"[!][JsRecon] Error: {e}")
             _note_phase_error("js_recon")
 
+    # GROUP 5b — Serialized-object detection (IP-mode mirror; passive, in-memory).
+    if settings.get('SERIALIZED_SCAN_ENABLED', False):
+        try:
+            from recon.serialized_scan import run_serialized_scan
+            combined_result = run_serialized_scan(combined_result, settings=settings)
+            combined_result["metadata"]["modules_executed"].append("serialized_scan")
+            save_recon_file(combined_result, output_file)
+            _graph_update_bg("update_graph_from_serialized_scan", combined_result, USER_ID, PROJECT_ID)
+        except Exception as e:
+            print(f"[!][SerializedScan] Error: {e}")
+            _note_phase_error("serialized_scan")
+
     # GROUP 5.5 -- Supply-Chain Recon (L2): runs AFTER JS-recon (consumes its
     # source_maps + technologies). Black-box package harvest + offline OSV verdict.
     if settings.get('SUPPLY_CHAIN_RECON_ENABLED', False):
@@ -1995,6 +2007,20 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             print(f"[!][JsRecon] Error: {e}")
             _note_phase_error("js_recon")
 
+    # GROUP 5b — Serialized-object detection (passive, in-memory; runs even when
+    # active scans are skipped). Flags :Vulnerability candidates for the agent's
+    # deserialization skill to confirm. Never deserializes.
+    if _settings.get('SERIALIZED_SCAN_ENABLED', False):
+        try:
+            from recon.serialized_scan import run_serialized_scan
+            combined_result = run_serialized_scan(combined_result, settings=_settings)
+            combined_result["metadata"]["modules_executed"].append("serialized_scan")
+            save_recon_file(combined_result, output_file)
+            _graph_update_bg("update_graph_from_serialized_scan", combined_result, USER_ID, PROJECT_ID)
+        except Exception as e:
+            print(f"[!][SerializedScan] Error: {e}")
+            _note_phase_error("serialized_scan")
+
     if not skip_active_scans:
         # ================================================================
         # GROUP 6 Phase A — Parallel active vuln scanners (Nuclei || GraphQL)
@@ -2310,6 +2336,7 @@ _PHASE_FINDING_SOURCES = {
     "vhost_sni": ("vhost_sni_enum",),
     "cache_scan": ("cache_poisoning", "wcvs"),
     "origin_discovery": ("origin_discovery",),
+    "serialized_scan": ("serialized_scan",),
 }
 
 

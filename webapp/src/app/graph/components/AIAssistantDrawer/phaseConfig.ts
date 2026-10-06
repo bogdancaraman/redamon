@@ -100,6 +100,12 @@ export const KNOWN_ATTACK_PATH_CONFIG: Record<string, { label: string; shortLabe
     color: 'var(--accent-rose, #f43f5e)',
     bgColor: 'rgba(244, 63, 94, 0.15)',
   },
+  deserialization: {
+    label: 'Insecure Deserialization',
+    shortLabel: 'DESER',
+    color: 'var(--accent-amber, #f59e0b)',
+    bgColor: 'rgba(245, 158, 11, 0.15)',
+  },
   path_traversal: {
     label: 'Path Traversal / LFI / RFI',
     shortLabel: 'PATH',

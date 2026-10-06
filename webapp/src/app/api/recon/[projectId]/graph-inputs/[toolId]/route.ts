@@ -147,6 +147,7 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   Ffuf: BASEURL_TOOL,
   Kiterunner: BASEURL_TOOL,
   JsRecon: JS_TOOL,
+  SerializedScan: JS_TOOL,
   SupplyChainRecon: JS_TOOL,
   Gau: { cypher: SUBDOMAIN_LIST, respond: subdomainFields },
   ParamSpider: { cypher: SUBDOMAIN_LIST, respond: subdomainFields },

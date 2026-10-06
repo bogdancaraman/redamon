@@ -280,6 +280,21 @@ export const EXPLOITATION_GROUPS: SESubGroup[] = [
     ],
   },
   {
+    id: 'deserialization',
+    title: 'Insecure Deserialization',
+    items: [
+      {
+        suggestions: [
+          { label: 'Confirm recon serialized-object candidates', prompt: 'Query the graph for pending serialized-object candidates: MATCH (e)-[:HAS_VULNERABILITY]->(v:Vulnerability {source: "serialized_scan"}) WHERE v.needs_agent_confirmation = true AND NOT (:ChainFinding)-[:CONFIRMS]->(v) RETURN v.id, v.deser_format, v.deser_transport, v.deser_location, v.matched_at ORDER BY v.id LIMIT 50. For each, pull the original request with the traffic tools and prepare a non-destructive out-of-band oracle.' },
+          { label: 'Prove a Java sink with a URLDNS oracle', prompt: 'For a native_java candidate, start interactsh-client in kali_shell, mint a ysoserial URLDNS blob pointed at the registered domain (no gadget library needed), deliver it to the sink via the original transport (cookie or body), and watch for the DNS hit. A hit confirms the sink deserializes attacker bytes with zero impact.' },
+          { label: 'Prove a Python pickle sink with a DNS oracle', prompt: 'For a python_pickle candidate, build a pickle whose __reduce__ triggers only a DNS lookup to your interactsh domain, deliver it to the sink, and confirm the callback. Do not run a command gadget; the DNS oracle is the confirmation.' },
+          { label: 'Fingerprint the serializer before forging', prompt: 'Decode the candidate blob with execute_code to confirm the format from its magic prefix (Java rO0AB / AC ED, .NET AAEAAAD/////, pickle gASV/gAJ, Ruby 04 08, PHP O:/a:) and extract embedded class names, so the gadget choice matches the real runtime. Black-box only.' },
+          { label: 'Report a confirmed candidate so it promotes', prompt: 'After the out-of-band oracle lands, report the finding with finding_type="vulnerability_confirmed" AND related_finding_ids set to the exact candidate id you captured, then re-query the candidate to confirm an incoming CONFIRMS edge now exists. Without the proof-typed finding_type and the exact id the candidate never promotes.' },
+        ],
+      },
+    ],
+  },
+  {
     id: 'path_traversal',
     title: 'Path Traversal / LFI / RFI',
     items: [

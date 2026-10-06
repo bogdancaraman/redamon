@@ -33,6 +33,11 @@ const BUILT_IN_SKILLS = [
     description: 'RCE / command injection, SSTI across templating engines, deserialization gadget chains (ysoserial), eval / OGNL / SpEL injection, and media-pipeline RCE',
   },
   {
+    id: 'deserialization',
+    name: 'Insecure Deserialization',
+    description: 'Confirms recon serialized-object candidates (Java, PHP, Python, .NET, Ruby, polymorphic JSON/XML/YAML, Hessian) with a non-destructive out-of-band oracle, then escalates to a gated gadget chain',
+  },
+  {
     id: 'path_traversal',
     name: 'Path Traversal / LFI / RFI',
     description: 'Arbitrary file read via path traversal, Local File Inclusion, Remote File Inclusion, PHP wrapper chains (php://filter, data://, expect://), log poisoning, and Zip Slip archive-extraction tests',

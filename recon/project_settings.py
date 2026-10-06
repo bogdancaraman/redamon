@@ -475,6 +475,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         '/rxjs/', '/react/', '/angular/', '/lodash/', '/zone.js/',
     ],
 
+    # ========== SERIALIZED OBJECT SCAN ==========
+    # Passive, in-memory serialized-object detection; writes info candidates.
+    'SERIALIZED_SCAN_ENABLED': False,
+
     # ========== JS RECON SCANNER ==========
     'JS_RECON_ENABLED': False,
     'JS_RECON_MAX_FILES': 10000,
@@ -1559,6 +1563,7 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     # They live in settings so apply_memory_governor can byte-budget them.
     settings['SUPPLY_CHAIN_IMPORT_MAX_FILES'] = _env_int('SUPPLY_CHAIN_IMPORT_MAX_FILES', DEFAULT_SETTINGS['SUPPLY_CHAIN_IMPORT_MAX_FILES'])
     settings['SUPPLY_CHAIN_IMPORT_MAX_BYTES'] = _env_int('SUPPLY_CHAIN_IMPORT_MAX_BYTES', DEFAULT_SETTINGS['SUPPLY_CHAIN_IMPORT_MAX_BYTES'])
+    settings['SERIALIZED_SCAN_ENABLED'] = project.get('serializedScanEnabled', DEFAULT_SETTINGS['SERIALIZED_SCAN_ENABLED'])
     settings['JS_RECON_ENABLED'] = project.get('jsReconEnabled', DEFAULT_SETTINGS['JS_RECON_ENABLED'])
     settings['JS_RECON_MAX_FILES'] = project.get('jsReconMaxFiles', DEFAULT_SETTINGS['JS_RECON_MAX_FILES'])
     settings['JS_RECON_TIMEOUT'] = project.get('jsReconTimeout', DEFAULT_SETTINGS['JS_RECON_TIMEOUT'])

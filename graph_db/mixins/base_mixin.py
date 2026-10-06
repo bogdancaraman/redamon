@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 
 from graph_db.schema import (init_schema, GLOBAL_REFERENCE_LABELS,
                             NON_RECON_LABELS, NON_RECON_SOURCES)
+from graph_db.node_filters.guards import GUARD_KEEP_CHECK
 
 # Load environment variables from local .env file
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -283,9 +284,14 @@ class BaseMixin:
         // and the DETACH DELETE and be deleted with the node.
         SET n._prune_lock = true
         REMOVE n._prune_lock
+        // Keep = an operator's own mute, OR any guard that spares a finding from
+        // a rule-mute (person judged it, agent proved it). Sourced from
+        // node_filters/guards.py so the prune and the mute guards never drift:
+        // deleting an agent-confirmed candidate because a later run stopped
+        // reporting it would destroy proof (plan §5.6-A, §12-A).
         WITH n,
              ((n:Muted AND NOT coalesce(n.muted_by, '') STARTS WITH 'rule:')
-              OR coalesce(n.triage_source, '') = 'human') AS keep
+              OR ({GUARD_KEEP_CHECK})) AS keep
         // Kept: stamped rather than deleted, so it shows as resolved and the
         // person who judged it can see what happened to it.
         FOREACH (_ IN CASE WHEN keep THEN [1] ELSE [] END |

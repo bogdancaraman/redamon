@@ -326,6 +326,7 @@ Pentesters running a final comprehensive sweep on a target they have full author
     mitreEnrichRecon: true,
 
     // --- All 28 security checks ---
+    serializedScanEnabled: true,
     securityCheckEnabled: true,
     securityCheckDirectIpHttp: true,
     securityCheckDirectIpHttps: true,

@@ -451,6 +451,17 @@ tools:
     partial_recon_module: "http_probing"
     form_section: "SecurityChecksSection"
     produces: ["Vulnerability"]
+  serialized_scan:
+    title: "Serialized object scan"
+    phase: js_recon
+    traffic: passive
+    enabled_key: "SERIALIZED_SCAN_ENABLED"
+    module: "recon.serialized_scan"
+    isolated_fn: "run_serialized_scan_isolated"
+    graph_writer: "update_graph_from_serialized_scan"
+    partial_recon_module: "serialized_scanning"
+    form_section: "SerializedScanSection"
+    produces: ["Vulnerability"]
   shodan:
     title: "Shodan"
     phase: domain_discovery
@@ -7966,6 +7977,21 @@ fields:
       Whether this individual check runs during the security-check pass. Each
       check is one condition tested against what the earlier phases already found;
       turning it off removes that finding class without affecting the rest.
+  serializedScanEnabled:
+    tool: serialized_scan
+    runtime_key: "SERIALIZED_SCAN_ENABLED"
+    unit: none
+    phase: js_recon
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      Whether the serialized-object scan runs. It is passive and in-memory: it
+      scans the response headers, Set-Cookie and enumerated parameters the
+      pipeline already holds for serialized-object signatures (Java, PHP, Python,
+      .NET, Ruby, Hessian, polymorphic JSON/XML/YAML), never deserializes, and
+      writes info-severity :Vulnerability candidates for the agent's
+      deserialization skill to confirm out of band.
   shodanDomainDns:
     tool: shodan
     runtime_key: "SHODAN_DOMAIN_DNS"

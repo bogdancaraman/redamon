@@ -10,5 +10,5 @@ RECON_FINDING_SOURCES = (
     "nuclei", "security_check", "js_recon", "jsluice", "takeover_scan",
     "cache_poisoning", "graphql_scan", "graphql_cop", "ai_surface_recon",
     "vhost_sni_enum", "origin_discovery", "nmap_nse", "resource_enum",
-    "http_probe", "vuln_scan", "wcvs",
+    "http_probe", "vuln_scan", "wcvs", "serialized_scan",
 )

@@ -46,3 +46,23 @@ export function notMuted(variable: string): string {
 export function noneMuted(...variables: string[]): string {
   return variables.map(notMuted).join(' AND ')
 }
+
+/**
+ * A WHERE fragment excluding an UNCONFIRMED agent-confirmation candidate.
+ *
+ * serialized_scan writes `:Vulnerability {source:'serialized_scan',
+ * needs_agent_confirmation:true, severity:'info'}` leads that only become real
+ * once the agent's deserialization skill lands a CONFIRMS edge. The graph
+ * screen, Node Inspector and Priority Board intentionally keep showing these
+ * leads, but the client report and the Insights analytics are deliverable
+ * surfaces that must not count an unconfirmed `info` candidate as a real
+ * vulnerability (plan §12-D). This is NOT a mute: the candidate stays unmuted so
+ * the agent's `query_graph` can read it.
+ */
+export function agentCandidateConfirmedOrNA(variable: string): string {
+  return (
+    `NOT (${variable}.source = 'serialized_scan' ` +
+    `AND coalesce(${variable}.needs_agent_confirmation, false) = true ` +
+    `AND NOT EXISTS { (:ChainFinding)-[:CONFIRMS]->(${variable}) })`
+  )
+}

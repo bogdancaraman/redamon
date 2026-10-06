@@ -228,6 +228,7 @@ Pentesters and security engineers testing REST APIs, GraphQL endpoints, or micro
     mitreEnabled: false,
 
     // --- DISABLE security checks ---
+    serializedScanEnabled: true,
     securityCheckEnabled: false,
 
     // --- DISABLE all OSINT ---

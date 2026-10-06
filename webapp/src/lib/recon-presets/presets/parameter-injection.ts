@@ -192,6 +192,7 @@ Pentesters and bug bounty hunters focused on injection vulnerabilities. Ideal fo
     mitreEnabled: false,
 
     // --- DISABLE security checks ---
+    serializedScanEnabled: true,
     securityCheckEnabled: false,
 
     // --- DISABLE all OSINT ---

@@ -58,9 +58,21 @@ class TestThePruneItself(unittest.TestCase):
 
     def test_it_never_deletes_something_a_person_touched(self):
         """The single most important line in the change: an operator's mute and
-        a human verdict both keep the finding."""
+        a human verdict both keep the finding. The keep clause now also spares
+        agent proof (confirmed / triage_proof / a CONFIRMS edge), sourced from
+        node_filters/guards.py GUARD_KEEP_CHECK so it never drifts from the mute
+        guards (plan §5.6-A: deleting an agent-confirmed candidate a later run
+        stopped reporting would destroy proof)."""
         self.assertIn("(n:Muted AND NOT coalesce(n.muted_by, '') STARTS WITH 'rule:')", self.SRC)
-        self.assertIn("OR coalesce(n.triage_source, '') = 'human') AS keep", self.SRC)
+        # the human verdict + the broadened proof keeps live in GUARD_KEEP_CHECK
+        # (guards.py), spliced into the keep clause via the f-string placeholder
+        self.assertIn("GUARD_KEEP_CHECK", self.SRC)
+        from graph_db.node_filters.guards import GUARD_KEEP_CHECK
+        self.assertIn("coalesce(n.triage_source, '') = 'human'", GUARD_KEEP_CHECK)
+        self.assertIn("coalesce(n.triage_source, '') = 'human'", GUARD_KEEP_CHECK)
+        self.assertIn("coalesce(n.triage_status, '') = 'confirmed'", GUARD_KEEP_CHECK)
+        self.assertIn("n.triage_proof IS NOT NULL", GUARD_KEEP_CHECK)
+        self.assertIn("CONFIRMS", GUARD_KEEP_CHECK)
 
     def test_a_rule_mute_is_not_a_person_touching_it(self):
         """A node-filter rule mute says nothing about THIS finding, so a finding

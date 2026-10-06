@@ -45,6 +45,7 @@ export const WORKFLOW_TOOLS: WorkflowToolDef[] = [
 
   // Group 5.5 - JS Recon
   { id: 'JsRecon', label: 'JS Recon', enabledField: 'jsReconEnabled', group: 5.5, badge: 'both' },
+  { id: 'SerializedScan', label: 'Serialized Objects', enabledField: 'serializedScanEnabled', group: 5.5, badge: 'passive' },
   { id: 'AiSurfaceRecon', label: 'AI Surface Recon', enabledField: 'aiSurfaceReconEnabled', group: 5.5, badge: 'active' },
   // Runs after JS Recon (consumes its source maps + the detected technologies);
   // the harvest sends no traffic of its own and the OSV verdict is offline.

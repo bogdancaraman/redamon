@@ -1221,6 +1221,141 @@
         "A finding with no scored impact keeps the writer's placeholder of medium severity and CVSS 5.0, so a severity or CVSS rule reads the placeholder."
       ]
     },
+    "vuln.serialized_scan": {
+      "id": "vuln.serialized_scan",
+      "group": "vulnerability",
+      "label": "Insecure deserialization",
+      "graph_label": "Vulnerability",
+      "key": "id",
+      "select": [
+        {
+          "prop": "source",
+          "in": [
+            "serialized_scan"
+          ]
+        }
+      ],
+      "sources": [
+        "serialized_scan"
+      ],
+      "behaviour": "finding",
+      "phase": 1,
+      "fields": {
+        "severity": {
+          "type": "ordinal",
+          "scale": "severity",
+          "normalizer": "severity",
+          "label": "Severity"
+        },
+        "cvss": {
+          "type": "number",
+          "normalizer": "cvss",
+          "label": "CVSS score"
+        },
+        "cve_ids": {
+          "type": "list",
+          "normalizer": "cve_ids",
+          "label": "CVE ids"
+        },
+        "has_cve": {
+          "type": "bool",
+          "normalizer": "has_cve",
+          "label": "Has a CVE"
+        },
+        "cve_year": {
+          "type": "number",
+          "normalizer": "cve_year",
+          "label": "Newest CVE year"
+        },
+        "name": {
+          "type": "text",
+          "normalizer": "name",
+          "label": "Name"
+        },
+        "updated_at": {
+          "type": "date",
+          "prop": "updated_at",
+          "label": "Last reported"
+        },
+        "deser_language": {
+          "type": "enum",
+          "prop": "deser_language",
+          "label": "Language",
+          "values": [
+            "java",
+            "php",
+            "python",
+            "dotnet",
+            "ruby"
+          ]
+        },
+        "deser_format": {
+          "type": "enum",
+          "prop": "deser_format",
+          "label": "Format",
+          "values": [
+            "native_java",
+            "jackson_json",
+            "fastjson",
+            "xmldecoder",
+            "xstream",
+            "snakeyaml",
+            "php_serialize",
+            "phar",
+            "python_pickle",
+            "dotnet_binaryformatter",
+            "viewstate",
+            "ruby_marshal",
+            "hessian"
+          ]
+        },
+        "deser_transport": {
+          "type": "enum",
+          "prop": "deser_transport",
+          "label": "Transport",
+          "values": [
+            "cookie",
+            "param",
+            "header"
+          ]
+        },
+        "deser_location": {
+          "type": "text",
+          "prop": "deser_location",
+          "label": "Location"
+        },
+        "deser_magic": {
+          "type": "text",
+          "prop": "deser_magic",
+          "label": "Marker"
+        },
+        "needs_agent_confirmation": {
+          "type": "bool",
+          "prop": "needs_agent_confirmation",
+          "label": "Awaiting agent confirmation"
+        },
+        "confidence": {
+          "type": "number",
+          "prop": "confidence",
+          "label": "Confidence (0-1)"
+        }
+      },
+      "overlaps": [],
+      "examples": [
+        {
+          "name": "Candidates awaiting confirmation",
+          "all": [
+            {
+              "field": "needs_agent_confirmation",
+              "op": "is_true"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "Select on source alone, never needs_agent_confirmation: a pending candidate must stay unmuted so the agent's query_graph (which inherits the mute exclusion) can read it. Report/Insights noise is handled by exclusion predicates, not muting."
+      ]
+    },
     "vuln.graphql": {
       "id": "vuln.graphql",
       "group": "vulnerability",

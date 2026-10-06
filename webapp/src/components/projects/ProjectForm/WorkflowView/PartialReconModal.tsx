@@ -71,6 +71,12 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     'baseline-poison-clean persistence check, confidence scoring). ' +
     'Targets are loaded from the graph (BaseURLs + Endpoints). You can also provide custom URLs below. ' +
     'Confirmed findings are merged as Vulnerability nodes (source=cache_poisoning) -- duplicates are updated, not recreated.',
+  SerializedScan:
+    'Passively scans response headers, Set-Cookie values and enumerated parameters for serialized-object ' +
+    'signatures (native Java, polymorphic JSON, XMLDecoder, XStream, SnakeYAML, PHP, Python pickle, .NET ' +
+    'BinaryFormatter / ViewState, Ruby Marshal, Hessian). It never deserializes and sends no traffic of its own. ' +
+    'Targets are loaded from the graph (BaseURLs + Endpoints). You can also provide custom URLs below. ' +
+    'Each hit is merged as an info-severity Vulnerability candidate (source=serialized_scan) the agent confirms out of band.',
   SubdomainDiscovery:
     'Discovers subdomains using 5 tools in parallel (crt.sh, HackerTarget, Subfinder, Amass, Knockpy), ' +
     'filters wildcards with Puredns, then resolves full DNS records (A, AAAA, MX, NS, TXT, SOA, CNAME) for each. ' +
@@ -533,15 +539,16 @@ export function PartialReconModal({
   const isSubdomainTakeover = toolId === 'SubdomainTakeover'
   const isVhostSni = toolId === 'VhostSni'
   const isWebCachePoison = toolId === 'WebCachePoison'
+  const isSerializedScan = toolId === 'SerializedScan'
   const isOriginDiscovery = toolId === 'OriginDiscovery'
-  const hasUserInputs = isPortScanner || isNmap || isTlsx || isHttpx || isResourceEnum || isArjun || isGau || isParamSpider || isSecurityChecks || isShodan || isOsintEnrichment || isGraphql || isSubdomainTakeover || isVhostSni || isWebCachePoison || isOriginDiscovery
+  const hasUserInputs = isPortScanner || isNmap || isTlsx || isHttpx || isResourceEnum || isArjun || isGau || isParamSpider || isSecurityChecks || isShodan || isOsintEnrichment || isGraphql || isSubdomainTakeover || isVhostSni || isWebCachePoison || isSerializedScan || isOriginDiscovery
   const hasIpInput = isPortScanner || isNmap || isTlsx || isHttpx || isSecurityChecks || isShodan || isOsintEnrichment || isVhostSni
   const hasSubdomainInput = toolId === 'Naabu' || isHttpx || isGau || isParamSpider || isSecurityChecks || isSubdomainTakeover || isVhostSni || isOriginDiscovery
   const hasPortInput = isNmap || isTlsx || isHttpx
   // GraphqlScan / WebCachePoison SECTION_INPUT_MAP = [BaseURL, Endpoint]. Per
   // PROMPT.ADD_PARTIAL_RECON.md, BaseURL-accepting tools get a URL textarea;
   // Endpoint is graph-only (never manually entered).
-  const hasUrlInput = isResourceEnum || isArjun || isSecurityChecks || isGraphql || isWebCachePoison
+  const hasUrlInput = isResourceEnum || isArjun || isSecurityChecks || isGraphql || isWebCachePoison || isSerializedScan
 
   // Subdomain validation
   const subdomainValidation = useMemo(
@@ -684,6 +691,7 @@ export function PartialReconModal({
     || (isNuclei && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0 && (graphInputs?.existing_subdomains_count ?? 0) === 0)
     || (isGraphql && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
     || (isWebCachePoison && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
+    || (isSerializedScan && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
     || (toolId === 'ZapAjaxSpider' && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
     || (isResourceEnum && !isNuclei && toolId !== 'JsRecon' && toolId !== 'ZapAjaxSpider' && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0)
     || (isArjun && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
@@ -699,6 +707,7 @@ export function PartialReconModal({
   const httpxNoPorts = isHttpx && !includeGraphTargets && !customPorts.trim() && !customSubdomains.trim()
   const resourceEnumNoUrls = isResourceEnum && !includeGraphTargets && !customUrls.trim() && !hasJsUploads
   const webCachePoisonNoUrls = isWebCachePoison && !includeGraphTargets && !customUrls.trim()
+  const serializedScanNoUrls = isSerializedScan && !includeGraphTargets && !customUrls.trim()
   const zapAjaxSpiderNoUrls = toolId === 'ZapAjaxSpider' && !loadingInputs && !customUrls.trim() && (!includeGraphTargets || ((graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0))
   const arjunNoUrls = isArjun && !includeGraphTargets && !customUrls.trim()
   const securityChecksNoUrls = isSecurityChecks && !includeGraphTargets && !customUrls.trim() && !customSubdomains.trim() && !customIps.trim()
@@ -719,6 +728,8 @@ export function PartialReconModal({
     : isGraphql
     ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints${graphInputs?.existing_graphql_endpoints_count ? `, ${graphInputs.existing_graphql_endpoints_count} already-flagged GraphQL` : ''})`
     : isWebCachePoison
+    ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints)`
+    : isSerializedScan
     ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints)`
     : isResourceEnum
     ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs)`
@@ -965,6 +976,14 @@ export function PartialReconModal({
             backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
           }}>
             Web Cache Poisoning requires live URLs to test. Provide custom URLs below or enable graph targets (which include existing BaseURLs + Endpoints from crawling).
+          </div>
+        )}
+        {serializedScanNoUrls && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            The serialized object scan reads targets from the graph. Provide custom URLs below or enable graph targets (existing BaseURLs + Endpoints from crawling).
           </div>
         )}
         {securityChecksNoUrls && !noTargetsToScan && (
@@ -1363,7 +1382,7 @@ export function PartialReconModal({
           <button
             type="button"
             onClick={handleRun}
-            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted}
+            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted}
             style={{
               padding: '8px 16px', borderRadius: '6px', border: 'none',
               backgroundColor: '#3b82f6', color: '#fff',

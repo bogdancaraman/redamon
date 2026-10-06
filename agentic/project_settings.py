@@ -389,6 +389,11 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     'PATH_TRAVERSAL_REQUEST_TIMEOUT': 10,               # curl --max-time / --connect-timeout for traversal probes (seconds)
     'PATH_TRAVERSAL_OOB_PROVIDER': 'oast.fun',          # interactsh-client server for RFI / OOB callbacks. Override when oast.fun is blocked.
 
+    # Insecure Deserialization Testing
+    'DESERIALIZATION_OOB_CALLBACK_ENABLED': True,       # Allow the non-destructive interactsh OOB oracle (URLDNS / pickle-DNS) that confirms a sink deserializes attacker bytes with zero impact
+    'DESERIALIZATION_EXEC_GADGETS_ENABLED': False,      # GATED OFF by default: when True, Step 7 delivers a code-execution gadget chain (ysoserial / phpggc / pickle __reduce__). Default confirms with the oracle only.
+    'DESERIALIZATION_OOB_PROVIDER': 'oast.fun',         # interactsh-client server for the deserialization OOB oracle. Override when oast.fun is blocked.
+
     # Attack Skill Configuration
     'ATTACK_SKILL_CONFIG': {
         'builtIn': {
@@ -400,6 +405,10 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
             'xss': True,
             'ssrf': True,
             'rce': True,
+            # Gated OFF by default (like http_request_smuggling): an operator opts
+            # in per project once the exec-gadget / egress decision is settled. A
+            # missing key reads as OFF in both the UI and get_enabled_builtin_skills.
+            'deserialization': False,
             'path_traversal': True,
             'access_control': True,
             # Fail-closed OFF: execute_code / kali_shell raw sockets bypass check_egress,

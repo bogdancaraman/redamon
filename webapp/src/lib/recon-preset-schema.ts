@@ -249,6 +249,9 @@ export const reconPresetSchema = z.object({
   githubMaxCommits: int,
   gauVerifyThreads: int,
 
+  // -- Serialized object scan (passive, in-memory) --
+  serializedScanEnabled: bool,
+
   // -- JS Analysis: JS Recon --
   jsReconEnabled: bool,
   jsReconMaxFiles: int,
@@ -802,6 +805,9 @@ export const RECON_PARAMETER_CATALOG = `
 - supplyChainReconEcosystems: string - Comma-separated OSV ecosystems to report (default "npm"). Matched EXACTLY against the harvested package ecosystem, so use these names verbatim, case included: npm, PyPI, Go, Maven, crates.io, Packagist, RubyGems, NuGet. Empty string means no filter (report every ecosystem)
 - supplyChainReconDeepAnalysisEnabled: boolean - GuardDog behavioural analysis of flagged packages. Downloads untrusted tarballs, so keep false unless explicitly requested
 - supplyChainTyposquatEnabled: boolean - Flag harvested package names one or two characters away from a popular package without being it. Off by default: near-miss matching produces false positives. The exact-match check against known-bad names always runs and is unaffected by this switch
+
+## Serialized object scan (passive, in-memory)
+- serializedScanEnabled: boolean - Scan the response headers, Set-Cookie and enumerated parameters the pipeline already holds for serialized-object signatures (native Java, polymorphic JSON/XML/YAML, PHP, Python pickle, .NET BinaryFormatter/ViewState, Ruby Marshal, Hessian). Passive and in-memory: no extra traffic, never deserializes. Writes info-severity :Vulnerability candidates the agent's deserialization skill confirms out of band. Best paired with the HTTP capture proxy (TrafficMind) so the agent has request-side traffic to confirm against. Good fit for web-app and API presets.
 
 ## JavaScript Analysis - JS Recon (deep)
 - jsReconEnabled: boolean - Run deep JS analysis

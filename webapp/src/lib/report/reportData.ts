@@ -6,7 +6,7 @@
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { RISK_TOP_N, projectRisk } from '@/lib/projectRisk'
-import { notMuted } from '@/lib/graphMute'
+import { notMuted, agentCandidateConfirmedOrNA } from '@/lib/graphMute'
 import type { Project, Remediation } from '@prisma/client'
 import { corroborateAttackFindings } from './aiAttackFindings'
 import type { AiAttackFindingRecord, RawAttackRow } from './aiAttackFindings'
@@ -1195,13 +1195,13 @@ async function queryAttackSurface(session: any, pid: string) {
 async function queryVulnerabilities(session: any, pid: string) {
   const sevRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${agentCandidateConfirmedOrNA('v')}
      RETURN v.severity AS severity, count(v) AS count`,
     { pid }
   )
   const findingsRes = await session.run(
     `MATCH (v:Vulnerability {project_id: $pid})
-    WHERE ${notMuted('v')}
+    WHERE ${notMuted('v')} AND ${agentCandidateConfirmedOrNA('v')}
      OPTIONAL MATCH (parent)-[:HAS_VULNERABILITY]->(v)
      OPTIONAL MATCH (v)-[:FOUND_AT]->(ep:Endpoint)
      OPTIONAL MATCH (v)-[:AFFECTS_PARAMETER]->(param:Parameter)
@@ -1212,6 +1212,7 @@ async function queryVulnerabilities(session: any, pid: string) {
           param.name AS paramName,
           CASE WHEN v.source = 'takeover_scan' THEN 'Subdomain Takeover'
                WHEN v.source = 'vhost_sni_enum' THEN 'VHost & SNI'
+               WHEN v.source = 'serialized_scan' THEN 'Insecure Deserialization'
                WHEN ep IS NOT NULL THEN 'DAST'
                WHEN v.source = 'gvm' THEN 'GVM'
                WHEN v.source = 'nuclei' THEN 'Nuclei'

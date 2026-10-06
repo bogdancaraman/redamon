@@ -1571,7 +1571,7 @@
    "unit": "seconds"
   },
   "attackSkillConfig": {
-   "default": "{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}",
+   "default": "{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"deserialization\":false,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}",
    "form_section": "AttackSkillsSection",
    "group": "agent",
    "has_default": true,
@@ -11047,6 +11047,22 @@
    "type": "boolean",
    "unit": "none"
   },
+  "serializedScanEnabled": {
+   "default": false,
+   "form_section": "SerializedScanSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Whether the serialized-object scan runs. It is passive and in-memory: it scans the response headers, Set-Cookie and enumerated parameters the pipeline already holds for serialized-object signatures (Java, PHP, Python, .NET, Ruby, Hessian, polymorphic JSON/XML/YAML), never deserializes, and writes info-severity :Vulnerability candidates for the agent's deserialization skill to confirm out of band.",
+   "optional": false,
+   "phase": "js_recon",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "SERIALIZED_SCAN_ENABLED",
+   "tool": "serialized_scan",
+   "traffic": "passive",
+   "type": "boolean",
+   "unit": "none"
+  },
   "shodanDomainDns": {
    "default": false,
    "form_section": "ShodanSection",
@@ -15320,6 +15336,20 @@
    ],
    "title": "Security checks",
    "traffic": "active"
+  },
+  "serialized_scan": {
+   "enabled_key": "SERIALIZED_SCAN_ENABLED",
+   "form_section": "SerializedScanSection",
+   "graph_writer": "update_graph_from_serialized_scan",
+   "isolated_fn": "run_serialized_scan_isolated",
+   "module": "recon.serialized_scan",
+   "partial_recon_module": "serialized_scanning",
+   "phase": "js_recon",
+   "produces": [
+    "Vulnerability"
+   ],
+   "title": "Serialized object scan",
+   "traffic": "passive"
   },
   "shodan": {
    "enabled_key": "SHODAN_ENABLED",

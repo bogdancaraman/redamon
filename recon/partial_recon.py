@@ -87,6 +87,7 @@ from recon.partial_recon_modules.js_analysis import run_jsrecon
 from recon.partial_recon_modules.supply_chain import run_supply_chain
 from recon.partial_recon_modules.graphql_scanning import run_graphqlscan
 from recon.partial_recon_modules.cache_scanning import run_webcachepoison
+from recon.partial_recon_modules.serialized_scanning import run_serialized_scan_partial
 from recon.partial_recon_modules.origin_enrichment import run_origin_discovery
 from recon.partial_recon_modules.vulnerability_scanning import (
     run_nuclei,
@@ -349,6 +350,8 @@ def _dispatch(tool_id: str, config: dict):
         return run_ai_surface_partial(config)
     elif tool_id == "JsRecon":
         return run_jsrecon(config)
+    elif tool_id == "SerializedScan":
+        return run_serialized_scan_partial(config)
     elif tool_id == "SupplyChainRecon":
         return run_supply_chain(config)
     elif tool_id == "GraphqlScan":

@@ -272,6 +272,7 @@ Bug bounty hunters who have already triaged a target (perhaps with the Quick Win
     mitreEnrichRecon: true,
 
     // --- Security checks: all enabled ---
+    serializedScanEnabled: true,
     securityCheckEnabled: true,
     securityCheckDirectIpHttp: true,
     securityCheckDirectIpHttps: true,

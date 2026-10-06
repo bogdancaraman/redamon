@@ -613,6 +613,34 @@ const SupplyChainRecon = (
   </div>
 )
 
+const SerializedScan = (
+  <div style={wrapperStyle}>
+    <div style={firstSectionTitleStyle}>How input is generated</div>
+    <p style={paraStyle}>
+      The Serialized Object Scan is passive and in-memory: it reads only what the pipeline already holds -- the
+      response headers and Set-Cookie values from HTTP probing, and the parameters discovered during resource
+      enumeration. It sends no traffic of its own and never deserializes anything.
+    </p>
+    <p style={{ ...paraStyle, margin: 0 }}>
+      Each candidate value is run through a bomb-safe decode-and-recurse step (URL, base64, gzip, zlib, hex, with
+      strict depth and size caps) and matched against serialized-object signatures for every family: native Java,
+      polymorphic JSON (Jackson / FastJSON), XMLDecoder, XStream, SnakeYAML, PHP, Python pickle, .NET
+      BinaryFormatter / ViewState, Ruby Marshal and Hessian.
+    </p>
+
+    <div style={sectionTitleStyle}>How output transforms the graph</div>
+    <ul style={listStyle}>
+      <li>Each hit becomes an <strong>info-severity Vulnerability</strong> candidate with <span style={codeStyle}>source: &quot;serialized_scan&quot;</span> and <span style={codeStyle}>needs_agent_confirmation: true</span>, linked to the affected <strong>Endpoint</strong> or <strong>BaseURL</strong> via <span style={codeStyle}>HAS_VULNERABILITY</span>.</li>
+      <li>The candidate carries the family, transport, location and decode chain (<span style={codeStyle}>deser_format</span>, <span style={codeStyle}>deser_transport</span>, <span style={codeStyle}>deser_location</span>, <span style={codeStyle}>deser_encoding_layers</span>) so the agent can find the original request and confirm it.</li>
+      <li>It stays at the bottom of the Priority Board (info) until the agent&apos;s deserialization skill confirms it out of band with a non-destructive oracle, which promotes it. Reports and Insights hide an unconfirmed candidate; the graph and Priority Board show it as a lead.</li>
+    </ul>
+    <p style={{ ...paraStyle, margin: 0 }}>
+      Confirmation needs captured request traffic, so pairing this with TrafficMind (the HTTP capture proxy)
+      gives the agent the corpus it digs through.
+    </p>
+  </div>
+)
+
 const JsRecon = (
   <div style={wrapperStyle}>
     <div style={firstSectionTitleStyle}>How input is generated</div>
@@ -1059,6 +1087,7 @@ export const INPUT_LOGIC_TOOLTIPS: Record<string, ReactNode> = {
   Ffuf,
   Jsluice,
   JsRecon,
+  SerializedScan,
   SupplyChainRecon,
   Arjun,
   EndpointAiClassifier,

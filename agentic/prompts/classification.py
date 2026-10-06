@@ -69,8 +69,16 @@ _SSRF_SECTION = """### ssrf — Server-Side Request Forgery (SSRF)
 _RCE_SECTION = """### rce — Remote Code Execution (RCE) / Command Injection
 - RCE testing against web applications and services: forcing the target to execute attacker-controlled code via OS command injection, server-side template injection (SSTI), insecure deserialization, dynamic eval / expression languages, media + document pipelines, or SSRF-to-RCE chains
 - Includes: command injection (commix), SSTI across Jinja2/Twig/Freemarker/Velocity/EJS/Thymeleaf (sstimap), Java deserialization gadget chains (ysoserial: URLDNS, CommonsCollections, Spring), PHP unserialize, Python pickle, Ruby Marshal, .NET ViewState, OGNL/SpEL/MVEL injection, ImageMagick/Ghostscript/ExifTool/LaTeX pipeline RCE, Log4Shell-style JNDI lookups, Spring4Shell, Struts S2-045, container/k8s escape probes, OOB DNS oracles via interactsh
-- Key distinction: code or shell commands execute on the SERVER (vs xss which runs JS in a victim browser, vs sql_injection which only injects SQL into a DB, vs ssrf which forces outbound HTTP fetches without code execution, vs cve_exploit which uses Metasploit modules against pre-known CVEs in network services, vs path_traversal which only reads files unless escalated via a wrapper-and-log-poisoning chain)
-- Keywords: RCE, remote code execution, command injection, code injection, shell injection, SSTI, server-side template injection, template injection, deserialization, gadget chain, ysoserial, commix, sstimap, eval, exec, system command, OGNL, SpEL, MVEL, log4shell, log4j, spring4shell, struts, ImageMagick, ImageTragick, Ghostscript, ExifTool, JNDI, picture upload RCE, Jinja2 SSTI, Freemarker SSTI, Twig SSTI, pickle RCE, container escape, docker.sock
+- Key distinction: code or shell commands execute on the SERVER (vs xss which runs JS in a victim browser, vs sql_injection which only injects SQL into a DB, vs ssrf which forces outbound HTTP fetches without code execution, vs cve_exploit which uses Metasploit modules against pre-known CVEs in network services, vs path_traversal which only reads files unless escalated via a wrapper-and-log-poisoning chain, vs deserialization which is the dedicated skill when the request NAMES a deserialization sink, a serializer/format, or a gadget tool — rce stays for GENERIC code execution when the user has not committed to a deserialization angle)
+- Keywords: RCE, remote code execution, command injection, code injection, shell injection, SSTI, server-side template injection, template injection, eval, exec, system command, OGNL, SpEL, MVEL, log4shell, log4j, spring4shell, struts, ImageMagick, ImageTragick, Ghostscript, ExifTool, JNDI, picture upload RCE, Jinja2 SSTI, Freemarker SSTI, Twig SSTI, container escape, docker.sock
+"""
+
+_DESERIALIZATION_SECTION = """### deserialization — Insecure Deserialization
+- Confirming and exploiting an untrusted byte-stream sink that flows attacker-controlled bytes into a language-level deserializer, across Java (ObjectInputStream, Jackson/FastJSON polymorphic typing, XMLDecoder, XStream, SnakeYAML, Hessian), PHP (unserialize, PHAR), Python (pickle, yaml.unsafe_load), .NET (BinaryFormatter, LosFormatter, ViewState, JSON.NET TypeNameHandling), and Ruby (Marshal, Psych.load)
+- Reuses recon's serialized_scan candidates (source="serialized_scan", needs_agent_confirmation) FIRST: confirm with a NON-DESTRUCTIVE out-of-band oracle (URLDNS, pickle __reduce__ DNS, etc.) before any code-execution gadget, then report finding_type="vulnerability_confirmed" carrying the candidate id so it promotes
+- Includes: ysoserial / phpggc / marshalsec gadget chains, Apache Shiro rememberMe cookies, JNDI/LDAP referral, PHAR polyglots via uploads, ViewState without MAC, @class / @type / $type JSON typing, secret_key_base Marshal cookies, OOB DNS oracles via interactsh
+- Key distinction: the sink is a SERIALIZER that reconstructs an object graph from attacker bytes, and the request NAMES a deserialization sink, a serializer/format, or a gadget tool (vs rce which is the broader choice for generic command execution, SSTI, eval / OGNL / SpEL, or media-pipeline RCE when the user has NOT committed to a deserialization angle; vs path_traversal which only reads files unless it chains a phar:// wrapper; vs cve_exploit which runs a canned Metasploit module instead of hand-forging the gadget)
+- Keywords: insecure deserialization, deserialization gadget, gadget chain, unserialize, ObjectInputStream, readObject, ysoserial, marshalsec, phpggc, PHAR, PHAR polyglot, pickle exploit, pickle RCE, yaml.unsafe_load, Marshal.load, BinaryFormatter, LosFormatter, ViewState, __VIEWSTATE, NetDataContractSerializer, JSON.NET TypeNameHandling, FastJSON autoType, Jackson polymorphic typing, SnakeYAML, Hessian, Kryo, secret_key_base Marshal, cookie unserialize, rO0AB, gASV
 """
 
 _PATH_TRAVERSAL_SECTION = """### path_traversal — Path Traversal / LFI / RFI
@@ -135,6 +143,7 @@ _BUILTIN_SKILL_MAP = {
     'xss': (_XSS_SECTION, 'f', 'xss'),
     'ssrf': (_SSRF_SECTION, 'g', 'ssrf'),
     'rce': (_RCE_SECTION, 'h', 'rce'),
+    'deserialization': (_DESERIALIZATION_SECTION, 'n', 'deserialization'),
     'path_traversal': (_PATH_TRAVERSAL_SECTION, 'i', 'path_traversal'),
     'access_control': (_ACCESS_CONTROL_SECTION, 'j', 'access_control'),
     'http_request_smuggling': (_HTTP_SMUGGLING_SECTION, 'k', 'http_request_smuggling'),
@@ -176,10 +185,14 @@ _CLASSIFICATION_INSTRUCTIONS = {
     'rce': """   - **rce**:
       - Does the request mention RCE, remote code execution, command injection, code injection, or shell execution on the server?
       - Does it mention server-side template injection (SSTI), Jinja2 / Twig / Freemarker / Velocity / EJS / Thymeleaf payloads?
-      - Does it mention insecure deserialization, gadget chains, ysoserial, pickle, PHP unserialize, ViewState, or Marshal.load?
       - Does it mention eval / exec / OGNL / SpEL / MVEL injection, or expression-language abuse?
       - Does it mention Log4Shell / JNDI, Spring4Shell, Struts S2-045, ImageMagick / Ghostscript / ExifTool / LaTeX pipeline RCE?
-      - Does it describe a path that ends in a SHELL or CODE running on the server (not just data extraction or browser-side JS)?""",
+      - Does it describe a path that ends in a SHELL or CODE running on the server (not just data extraction or browser-side JS)?
+      - If the request specifically NAMES a deserialization sink, a serializer/format, or a gadget tool (ysoserial / phpggc / pickle / unserialize / ViewState / Marshal), classify **deserialization** instead; rce is for generic code execution with no committed deserialization angle.""",
+    'deserialization': """   - **deserialization**:
+      - Does the request name a deserialization SINK (unserialize, readObject, pickle.loads, Marshal.load, BinaryFormatter, ViewState), a serializer/FORMAT (Java ObjectInputStream, PHP serialize, Python pickle, .NET BinaryFormatter, Ruby Marshal, SnakeYAML, Jackson/FastJSON polymorphic typing, Hessian), or a gadget TOOL (ysoserial, phpggc, marshalsec)?
+      - Is the goal to confirm or exploit attacker-controlled bytes reconstructed into an object graph, or to confirm a recon serialized_scan candidate?
+      - If so classify **deserialization**. If the request is generic RCE with no deserialization angle, classify **rce** instead.""",
     'path_traversal': """   - **path_traversal**:
       - Does the request mention path traversal, directory traversal, LFI, RFI, file inclusion, or arbitrary file read?
       - Does it mention `../`, `%2e%2e%2f`, `..;/`, double-decode, or nginx alias bypass?
@@ -230,7 +243,7 @@ _CLASSIFICATION_INSTRUCTIONS = {
 def build_skill_menu(enabled_builtins: set[str], enabled_user_skills: list[dict]) -> str:
     """Full per-skill selection text (step-1 sections + criteria) for every turn."""
     order = ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit',
-             'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'path_traversal', 'access_control',
+             'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'deserialization', 'path_traversal', 'access_control',
              'http_request_smuggling', 'xxe', 'crypto_attack']
     parts = [
         "## ATTACK SKILL SELECTION — re-evaluate EVERY turn\n"
@@ -312,7 +325,7 @@ def build_classification_prompt(objective: str) -> str:
     parts.append("## Attack Skill Types (ONLY for exploitation phase)\n")
 
     # Built-in skills (only enabled ones)
-    for skill_id in ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit', 'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'path_traversal', 'access_control', 'http_request_smuggling', 'xxe', 'crypto_attack']:
+    for skill_id in ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit', 'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'deserialization', 'path_traversal', 'access_control', 'http_request_smuggling', 'xxe', 'crypto_attack']:
         if skill_id in enabled_builtins:
             section_text, _, _ = _BUILTIN_SKILL_MAP[skill_id]
             parts.append(section_text)
@@ -343,7 +356,7 @@ def build_classification_prompt(objective: str) -> str:
                  "'brute force SSH' → brute_force_credential_guess). Pick the one whose criteria fit most closely:\n")
 
     # Built-in skill classification criteria
-    builtin_skill_ids = ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit', 'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'path_traversal', 'access_control', 'http_request_smuggling', 'xxe', 'crypto_attack']
+    builtin_skill_ids = ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit', 'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'deserialization', 'path_traversal', 'access_control', 'http_request_smuggling', 'xxe', 'crypto_attack']
     for skill_id in builtin_skill_ids:
         if skill_id in enabled_builtins:
             parts.append(_CLASSIFICATION_INSTRUCTIONS[skill_id])

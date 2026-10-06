@@ -259,6 +259,7 @@ Pentesters with full authorization on an engagement where stealth is irrelevant.
     mitreEnrichRecon: true,
 
     // --- Security Checks: all enabled ---
+    serializedScanEnabled: true,
     securityCheckEnabled: true,
     securityCheckDirectIpHttp: true,
     securityCheckDirectIpHttps: true,

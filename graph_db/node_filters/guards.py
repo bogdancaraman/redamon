@@ -27,6 +27,16 @@ GUARD_WRITE_CHECK = """coalesce(n.triage_source, '') <> 'human'
   AND n.triage_proof IS NULL
   AND NOT EXISTS { MATCH (:ChainFinding)-[:CONFIRMS]->(n) }"""
 
+#: The positive form of GUARD_WRITE_CHECK: a finding the stale-prune must KEEP
+#: (stamp stale_since, never DELETE) because a person judged it or the agent
+#: proved it. The same reasons a rule may not mute it apply here: deleting an
+#: agent-confirmed finding because a later run stopped reporting it would destroy
+#: proof. Used by base_mixin.prune_unseen_findings.
+GUARD_KEEP_CHECK = """coalesce(n.triage_source, '') = 'human'
+  OR coalesce(n.triage_status, '') = 'confirmed'
+  OR n.triage_proof IS NOT NULL
+  OR EXISTS { MATCH (:ChainFinding)-[:CONFIRMS]->(n) }"""
+
 GUARD_KEYS = ("g_human", "g_confirmed", "g_chain")
 
 

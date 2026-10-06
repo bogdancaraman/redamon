@@ -102,6 +102,11 @@ from .rce_prompts import (
 )
 
 # Re-export from Path Traversal / LFI / RFI prompts
+from .deserialization_prompts import (
+    DESERIALIZATION_TOOLS,
+    DESERIALIZATION_OOB_WORKFLOW,
+    DESERIALIZATION_PAYLOAD_REFERENCE,
+)
 from .path_traversal_prompts import (
     PATH_TRAVERSAL_TOOLS,
     PATH_TRAVERSAL_PHP_WRAPPERS,
@@ -337,6 +342,20 @@ def build_builtin_skill_workflow(
             parts.append(PATH_TRAVERSAL_ARCHIVE_EXTRACTION)
         if pt_payref_enabled:
             parts.append(PATH_TRAVERSAL_PAYLOAD_REFERENCE)
+        return parts
+    elif (attack_path_type == "deserialization"
+            and "deserialization" in enabled_builtins
+            and "kali_shell" in allowed_tools):
+        deser_oob_enabled = get_setting('DESERIALIZATION_OOB_CALLBACK_ENABLED', True)
+        deser_exec_enabled = get_setting('DESERIALIZATION_EXEC_GADGETS_ENABLED', False)
+        deser_settings = {
+            'deser_exec_gadgets_enabled': deser_exec_enabled,
+            'deser_oob_provider': get_setting('DESERIALIZATION_OOB_PROVIDER', 'oast.fun'),
+        }
+        parts.append(DESERIALIZATION_TOOLS.format(**deser_settings))
+        if deser_oob_enabled:
+            parts.append(DESERIALIZATION_OOB_WORKFLOW)
+        parts.append(DESERIALIZATION_PAYLOAD_REFERENCE)
         return parts
     elif (attack_path_type == "rce"
             and "rce" in enabled_builtins
@@ -668,6 +687,10 @@ __all__ = [
     "RCE_OOB_WORKFLOW",
     "RCE_DESERIALIZATION_WORKFLOW",
     "RCE_PAYLOAD_REFERENCE",
+    # Insecure Deserialization
+    "DESERIALIZATION_TOOLS",
+    "DESERIALIZATION_OOB_WORKFLOW",
+    "DESERIALIZATION_PAYLOAD_REFERENCE",
     # Path Traversal / LFI / RFI
     "PATH_TRAVERSAL_TOOLS",
     "PATH_TRAVERSAL_PHP_WRAPPERS",

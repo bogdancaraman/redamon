@@ -885,6 +885,11 @@ model Project {
   jsReconCustomPackages       String   @default("")    @map("js_recon_custom_packages")
   jsReconCustomEndpointKeywords String @default("")    @map("js_recon_custom_endpoint_keywords")
   jsReconCustomFrameworks     String   @default("")    @map("js_recon_custom_frameworks")
+  // ========== SERIALIZED OBJECT SCAN ==========
+  // Passive, in-memory detection of serialized-object data (native Java,
+  // polymorphic JSON, XML, YAML, PHP, Python, .NET, Ruby, Hessian). Writes
+  // info-severity :Vulnerability candidates the agent confirms out of band.
+  serializedScanEnabled       Boolean  @default(false) @map("serialized_scan_enabled")
   // Adversarial AI surface recon Phase 6 — detect AI/LLM SDK imports,
   // hard-coded provider keys, dangerouslyAllowBrowser flags, and AI-frontend
   // product markers inside discovered JS bundles. Pure regex over data
@@ -1276,7 +1281,7 @@ model Project {
   pathTraversalOobProvider              String   @default("oast.fun") @map("path_traversal_oob_provider")
 
   // ========== ATTACK SKILL CONFIG ==========
-  attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}") @map("attack_skill_config")
+  attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"deserialization\":false,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}") @map("attack_skill_config")
 
   // ========== CYPHERFIX SETTINGS ==========
   cypherfixGithubToken              String   @default("") @map("cypherfix_github_token")

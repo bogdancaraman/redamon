@@ -544,6 +544,31 @@ class UserInputMixin:
                     "source": "graph" if record["domain"] else "settings",
                 }
 
+            elif tool_id == "SerializedScan":
+                # Serialized-object scan consumes live BaseURLs + Endpoints (graph + custom URLs)
+                result = session.run(
+                    """
+                    OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid})
+                    WITH d
+                    OPTIONAL MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
+                    WITH d, collect(DISTINCT b.url) AS baseurls
+                    OPTIONAL MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
+                    WITH d, baseurls, count(DISTINCT e) AS endpoint_count
+                    RETURN d.name AS domain, baseurls, size(baseurls) AS baseurl_count,
+                           endpoint_count
+                    """,
+                    uid=user_id, pid=project_id,
+                )
+                record = result.single()
+                return {
+                    "domain": record["domain"] if record["domain"] else None,
+                    "existing_subdomains_count": 0,
+                    "existing_baseurls": record["baseurls"] or [],
+                    "existing_baseurls_count": record["baseurl_count"] or 0,
+                    "existing_endpoints_count": record["endpoint_count"] or 0,
+                    "source": "graph" if record["domain"] else "settings",
+                }
+
             elif tool_id == "WebCachePoison":
                 # Cache poisoning consumes live BaseURLs + Endpoints (graph + custom URLs)
                 result = session.run(
