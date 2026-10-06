@@ -1,0 +1,196 @@
+.wrapper {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  padding: var(--space-6);
+  overflow: auto;
+}
+
+/* Dotted canvas backdrop, faded toward the edges so the card stays the focus.
+   The pitch must not divide the card's 440px width: a centered grid that does
+   puts a column of dots exactly on both card edges, which then look dotted. */
+.wrapper::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, var(--border-strong) 1px, transparent 1.5px);
+  background-size: 24px 24px;
+  background-position: center;
+  -webkit-mask-image: radial-gradient(ellipse 60% 65% at center, #000 15%, transparent 100%);
+  mask-image: radial-gradient(ellipse 60% 65% at center, #000 15%, transparent 100%);
+  pointer-events: none;
+}
+
+/* Same surface tokens as the shared Modal, so it follows both themes. The auto
+   margin centers it without clipping the top when the viewport is shorter. */
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 440px;
+  margin: auto;
+  padding: var(--space-8);
+  background: var(--drawer-bg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  text-align: center;
+  animation: cardIn 240ms ease-out;
+}
+
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.illustration {
+  width: 272px;
+  max-width: 100%;
+  height: auto;
+  margin-bottom: var(--space-5);
+  overflow: visible;
+}
+
+.link {
+  stroke: var(--text-tertiary);
+  stroke-opacity: 0.55;
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+/* Hides the link where it would show through a ghost's translucent fill. */
+.ghostBacking {
+  fill: var(--drawer-bg);
+}
+
+/* Dashed outlines read as "not discovered yet"; each takes its node-type color
+   from the inline `color`. */
+.ghost {
+  fill: currentColor;
+  fill-opacity: 0.12;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+}
+
+.target {
+  fill: var(--accent-primary);
+}
+
+.halo {
+  fill: none;
+  stroke: var(--accent-primary);
+  stroke-width: 1.5;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: halo 2.4s ease-out infinite;
+}
+
+@keyframes halo {
+  from {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.card[data-state='running'] .link {
+  animation: march 1.4s linear infinite;
+}
+
+/* One dash period (3 + 4), so the loop is seamless. */
+@keyframes march {
+  to {
+    stroke-dashoffset: -7;
+  }
+}
+
+/* Solid outline while filling in: dashes over a filled disc look scalloped. */
+.card[data-state='running'] .ghost {
+  stroke-dasharray: none;
+  animation: discover 2.45s ease-in-out infinite;
+}
+
+@keyframes discover {
+  0%,
+  100% {
+    fill-opacity: 0.12;
+  }
+  30% {
+    fill-opacity: 0.85;
+  }
+}
+
+.title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--space-2);
+}
+
+.description {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* Filled version of the toolbar's Start Recon Pipeline button. */
+.startButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+  padding: var(--space-2-5) var(--space-5);
+  background: var(--status-success);
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-on-accent);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.startButton:hover {
+  filter: brightness(1.1);
+}
+
+.startButton:focus-visible {
+  outline: 2px solid var(--status-success);
+  outline-offset: 2px;
+}
+
+.running {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+  padding: var(--space-1-5) var(--space-3);
+  background: var(--status-success-bg);
+  border-radius: var(--radius-full);
+  color: var(--status-success-text);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

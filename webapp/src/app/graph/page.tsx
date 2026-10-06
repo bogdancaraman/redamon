@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { GraphToolbar } from './components/GraphToolbar'
 import { FileSystemDrawer } from './components/FileSystemDrawer'
 import { GraphCanvas, AUTO_2D_THRESHOLD } from './components/GraphCanvas'
+import { GraphEmptyState } from './components/GraphEmptyState'
 import { NodeDrawer } from './components/NodeDrawer'
 import { AIAssistantDrawer } from './components/AIAssistantDrawer'
 import type { PendingNodeQuery } from './components/AIAssistantDrawer/types'
@@ -59,6 +60,7 @@ import { exportToCsv, exportToJson, exportToMarkdown } from './utils/exportCsv'
 import { clusterGraphData } from './utils/clusterNodes'
 import { isOverNodeCap } from './utils/nodeCap'
 import { isGraphRenderOff, shouldFetchGraph } from './utils/renderGate'
+import { resolveEmptyGraphState } from './utils/emptyGraph'
 import { useTheme, useSession, useReconStatus, useReconSSE, useGvmStatus, useGvmSSE, useGithubHuntStatus, useGithubHuntSSE, useTrufflehogRuns, useTrufflehogSSE, useSupplyChainStatus, useSupplyChainSSE, useActiveSessions, useMultiPartialReconStatus, useMultiPartialReconSSE } from '@/hooks'
 import { useProjectById } from '@/hooks/useProjects'
 import { useScanStartFailure } from '@/hooks/useScanStartFailure'
@@ -1485,6 +1487,18 @@ export default function GraphPage() {
     )
   }
 
+  // Reads the raw payload, not the filtered one: a graph whose nodes are all
+  // hidden by a filter is not an empty graph.
+  const emptyGraphState = resolveEmptyGraphState({
+    nodeCount: data?.nodes.length,
+    isLoading,
+    hasError: !!error,
+    reconStatus: reconState?.status || 'idle',
+    hasActivePartialRecons: activePartialRecons.length > 0,
+    viewingPastVersion: isViewingPastVersion,
+    isActivatingVersion,
+  })
+
   // Bound to a name rather than wrapped inline so the provider does not
   // re-indent the whole page.
   const page = (
@@ -1698,6 +1712,12 @@ export default function GraphPage() {
                   browser responsive. To review the recon data, consult the Node inspector section instead.
                 </p>
               </div>
+            ) : emptyGraphState ? (
+              <GraphEmptyState
+                state={emptyGraphState}
+                onStartRecon={handleStartRecon}
+                onResumeRecon={handleResumeRecon}
+              />
             ) : (
               <GraphCanvas
                 data={stableGraphData}
