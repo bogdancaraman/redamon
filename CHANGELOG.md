@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.25.0] - 2026-10-06
+
+### Added
+
+- **Serialized-object detection with agent confirmation.** A new passive recon module flags insecure-deserialization sinks across every major family (native Java, polymorphic JSON/XML/YAML, PHP + PHAR, Python pickle, .NET BinaryFormatter / ViewState, Ruby Marshal) in response headers, `Set-Cookie` and enumerated parameters, bomb-safe and never deserializing, and writes info-severity `needs_agent_confirmation` candidates. The rewritten built-in **Insecure Deserialization** agent skill confirms them (or finds new sinks from scratch) with a non-destructive out-of-band oracle, then promotes the real ones on the Priority Board. Both halves default off.
+- **`ruby` and `viewgen` in the Kali sandbox,** so the Insecure Deserialization and RCE skills forge Ruby Marshal / Rails `secret_key_base` cookies and ASP.NET ViewState (known machineKey) end-to-end.
+
 ## [6.24.3] - 2026-10-05
 
 ### Added

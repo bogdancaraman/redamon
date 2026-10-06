@@ -42,6 +42,8 @@ These tools are either installed in Docker images or pulled as Docker containers
 | **commix** | Automated command injection detection and exploitation | GPL-3.0 | https://github.com/commixproject/commix | Installed via `apt-get` in `mcp/kali-sandbox/Dockerfile` |
 | **ysoserial** | Java deserialization gadget chain generator | MIT | https://github.com/frohoff/ysoserial | JAR downloaded from upstream releases in `mcp/kali-sandbox/Dockerfile` |
 | **phpggc** | PHP gadget chain generator (unserialize / PHAR exploitation) | Apache-2.0 | https://github.com/ambionics/phpggc | Cloned from upstream in `mcp/kali-sandbox/Dockerfile` |
+| **Ruby** | Interpreter for Ruby Marshal / Rails (`secret_key_base` cookie) deserialization gadget crafting (Insecure Deserialization + RCE skills, Ruby track) | Ruby License / BSD-2-Clause | https://www.ruby-lang.org | Installed via `apt-get` in `mcp/kali-sandbox/Dockerfile` (separate-process CLI invocation via `kali_shell`) |
+| **viewgen** | ASP.NET ViewState generator/decoder: forge a signed/encrypted `__VIEWSTATE` when the machineKey is leaked / default / known (Insecure Deserialization skill, .NET track) | MIT | https://github.com/0xacb/viewgen | Installed via `pip` in `mcp/kali-sandbox/Dockerfile` |
 | **netexec** | Multi-protocol network exploitation (CrackMapExec successor) | BSD-2-Clause | https://github.com/Pennyw0rth/NetExec | Installed via `apt-get` in `mcp/kali-sandbox/Dockerfile` |
 | **hashcat** | GPU-accelerated password cracking | MIT | https://github.com/hashcat/hashcat | Installed via `apt-get` in `mcp/kali-sandbox/Dockerfile` |
 | **sshpass** | Non-interactive SSH password authentication | GPL-2.0 | https://sourceforge.net/projects/sshpass/ | Installed via `apt-get` in `mcp/kali-sandbox/Dockerfile` |
