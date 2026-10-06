@@ -23,7 +23,8 @@ def _graph_recon_data():
                 "headers": {"set_cookie": "sess=rO0ABXNy; Path=/"},
             },
         }},
-        "resource_enum": {"endpoints": {}, "parameters": {}, "discovered_urls": []},
+        "resource_enum": {"endpoints": {}, "parameters": {}, "by_base_url": {},
+                          "forms": [], "discovered_urls": []},
         "metadata": {},
     }
 
@@ -46,8 +47,7 @@ class TestRunSerializedScanPartial(unittest.TestCase):
         with patch.dict("sys.modules", {"graph_db": fake_graph_db}), \
              patch.object(mod, "scope_roots", return_value=["example.com"]), \
              patch.object(mod, "partial_settings", return_value={}), \
-             patch.object(mod, "_should_include_root_domain", return_value=True), \
-             patch.object(mod, "_build_graphql_data_from_graph", builder):
+             patch.object(mod, "_build_serialized_data_from_graph", builder):
             import os
             os.environ["USER_ID"] = "user1"
             os.environ["PROJECT_ID"] = "proj1"
@@ -73,9 +73,32 @@ class TestRunSerializedScanPartial(unittest.TestCase):
             {"domain": "example.com", "include_graph_targets": False},
             graph_data={"domain": "example.com", "domains": ["example.com"],
                         "http_probe": {"by_url": {}},
-                        "resource_enum": {"endpoints": {}, "parameters": {}, "discovered_urls": []},
+                        "resource_enum": {"endpoints": {}, "parameters": {}, "by_base_url": {},
+                                          "forms": [], "discovered_urls": []},
                         "metadata": {}})
         self.assertFalse(client.update_graph_from_serialized_scan.called)
+
+    def test_graph_targets_come_from_the_serialized_builder(self):
+        # The first E2E found partial re-detecting 0: the shared GraphQL builder
+        # zeroed response headers and dropped every parameter. The partial must
+        # read the serialized builder, which rebuilds both from the graph.
+        _, builder = self._run({"domain": "example.com", "include_graph_targets": True,
+                                "domain_groups": None})
+        self.assertTrue(builder.called)
+        self.assertEqual(builder.call_args[0][:3], (["example.com"], "user1", "proj1"))
+        self.assertIn("domain_groups", builder.call_args[1])
+
+    def test_a_parameter_value_from_the_graph_is_scanned(self):
+        data = _graph_recon_data()
+        data["http_probe"]["by_url"] = {}
+        data["resource_enum"]["by_base_url"] = {"https://example.com": {"endpoints": {
+            "/api/load": {"method": "GET",
+                          "parameters": {"data": {"sample_values": ["rO0ABXNy"]}}}}}}
+        client, _ = self._run({"domain": "example.com", "include_graph_targets": True},
+                              graph_data=data)
+        findings = client.update_graph_from_serialized_scan.call_args[0][0]["serialized_scan"]["findings"]
+        self.assertIn(("native_java", "param"),
+                      {(f["deser_format"], f["deser_transport"]) for f in findings})
 
     def test_user_urls_used_without_graph_targets(self):
         client, _ = self._run({

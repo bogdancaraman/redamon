@@ -1125,3 +1125,161 @@ def _build_graphql_data_from_graph(domains, user_id: str, project_id: str,
                 })
 
     return recon_data
+
+
+def _build_serialized_data_from_graph(domains, user_id: str, project_id: str,
+                                      settings: dict = None, domain_groups: list = None) -> dict:
+    """Build recon_data for the serialized-object scan from the existing graph.
+
+    The scanner reads three sections (recon/serialized_scan/scanner.py): response
+    headers + Set-Cookie (http_probe.by_url), enumerated endpoints/parameters
+    (resource_enum.by_base_url) and crawled form fields (resource_enum.forms). A
+    partial run has none of these in memory, so this rebuilds them from the nodes
+    the full pipeline persisted:
+      - Header nodes (Endpoint-[:HAS_HEADER]->Header) carry EVERY response header,
+        Set-Cookie included, keyed by the response URL - the main detection path.
+      - Parameter.sample_values (<=5, resource_mixin) carry example values.
+      - Endpoint.form_input_names carry form field NAMES (values are not persisted,
+        so a serialized blob baked into a hidden field's value cannot be recovered
+        from the graph - only its name, which still flags a sink-named field).
+    Scope is the same graph_url_scope the other builders use. `settings` is the
+    run's preloaded settings; only a direct caller omits it.
+    """
+    from graph_db import Neo4jClient
+
+    from recon.partial_recon_modules.helpers import _should_include_root_domain
+
+    if settings is None:
+        from recon.project_settings import get_settings
+        settings = get_settings()
+    roots = _as_roots(domains)
+    include_root_domain = _should_include_root_domain(settings)
+    recon_data = {
+        "domain": roots[0] if roots else "",
+        "domains": roots,
+        "http_probe": {"by_url": {}},
+        "resource_enum": {"endpoints": {}, "parameters": {}, "by_base_url": {},
+                          "forms": [], "discovered_urls": []},
+        "metadata": {
+            "roe": {
+                "ROE_ENABLED": settings.get("ROE_ENABLED", False),
+                "ROE_EXCLUDED_HOSTS": settings.get("ROE_EXCLUDED_HOSTS", []) or [],
+            }
+        },
+    }
+    if not roots:
+        return recon_data
+
+    by_url = recon_data["http_probe"]["by_url"]
+    by_base = recon_data["resource_enum"]["by_base_url"]
+
+    with Neo4jClient() as graph_client:
+        if not graph_client.verify_connection():
+            print("[!][Partial Recon] Neo4j not reachable, cannot fetch graph inputs")
+            return recon_data
+
+        driver = graph_client.driver
+        with driver.session() as session:
+            # apex_filter default (True): the serialized partial honours Include
+            # Root Domain, unlike the GraphQL builder which never had an apex rule.
+            keep = graph_url_scope(session, user_id, project_id, roots, domain_groups,
+                                   include_root_domain=include_root_domain)
+
+            # 1) BaseURL nodes seed by_url (so a root with headers only on "/" is covered).
+            result = session.run(
+                """
+                MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
+                """ + _PROBED_ENDPOINT + """
+                RETURN b.url AS url, b.host AS host,
+                       coalesce(b.status_code, probe.status_code) AS status_code,
+                       coalesce(b.content_type, probe.content_type) AS content_type
+                """,
+                uid=user_id, pid=project_id,
+            )
+            for record in result:
+                url = record["url"]
+                if not url or not keep(url_host(url, record["host"] or "")):
+                    continue
+                by_url[url] = {
+                    "url": url,
+                    "host": record["host"] or "",
+                    "status_code": int(record["status_code"]) if record["status_code"] is not None else 200,
+                    "content_type": record["content_type"] or "",
+                    "headers": {},
+                }
+
+            # 2) Response headers (Set-Cookie included) keyed by the response URL the
+            # header came from; this is where the serialized blobs ride. A header on
+            # an endpoint URL not seen as a BaseURL still gets its own by_url entry.
+            result = session.run(
+                """
+                MATCH (e:Endpoint {user_id: $uid, project_id: $pid})-[:HAS_HEADER]->(h:Header)
+                WHERE h.name IS NOT NULL
+                RETURN coalesce(h.baseurl, e.baseurl) AS url, e.host AS host,
+                       h.name AS name, h.value AS value
+                """,
+                uid=user_id, pid=project_id,
+            )
+            for record in result:
+                url = record["url"]
+                if not url or not keep(url_host(url, record["host"] or "")):
+                    continue
+                entry = by_url.setdefault(url, {
+                    "url": url, "host": record["host"] or url_host(url),
+                    "status_code": 200, "content_type": "", "headers": {},
+                })
+                # One header name can repeat (several Set-Cookie); keep every value.
+                entry.setdefault("headers", {}).setdefault(record["name"], []).append(
+                    str(record["value"]) if record["value"] is not None else "")
+
+            # 3) Endpoints + their parameters (names AND sample_values) -> by_base_url,
+            # the exact shape _scan_resource_enum / _iter_params read.
+            result = session.run(
+                """
+                MATCH (b:BaseURL {user_id: $uid, project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
+                WHERE e.path IS NOT NULL
+                OPTIONAL MATCH (e)-[:HAS_PARAMETER]->(p:Parameter)
+                WHERE p.name IS NOT NULL
+                RETURN b.url AS base, b.host AS host, e.path AS path,
+                       coalesce(e.method, 'GET') AS method,
+                       collect(DISTINCT {name: p.name, sample_values: coalesce(p.sample_values, [])}) AS params
+                """,
+                uid=user_id, pid=project_id,
+            )
+            for record in result:
+                base = record["base"]
+                if not base or not keep(url_host(base, record["host"] or "")):
+                    continue
+                params = {}
+                for p in record["params"] or []:
+                    name = p.get("name")
+                    if not name:
+                        continue
+                    samples = [s for s in (p.get("sample_values") or []) if isinstance(s, str)]
+                    params[str(name)] = {"sample_values": samples}
+                endpoints = by_base.setdefault(base, {"endpoints": {}})["endpoints"]
+                endpoints[record["path"]] = {"method": record["method"], "parameters": params}
+
+            # 4) Form field names (values are not persisted in the graph) -> forms.
+            result = session.run(
+                """
+                MATCH (b:BaseURL {user_id: $uid, project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
+                WHERE e.form_input_names IS NOT NULL AND size(e.form_input_names) > 0
+                RETURN b.url AS base, b.host AS host, e.path AS path,
+                       coalesce(e.method, 'GET') AS method, e.form_input_names AS names
+                """,
+                uid=user_id, pid=project_id,
+            )
+            for record in result:
+                base = record["base"]
+                if not base or not keep(url_host(base, record["host"] or "")):
+                    continue
+                endpoint_url = base.rstrip("/") + "/" + str(record["path"] or "").lstrip("/")
+                recon_data["resource_enum"]["forms"].append({
+                    "found_at": endpoint_url,
+                    "action": endpoint_url,
+                    "method": record["method"],
+                    "inputs": [{"name": n, "value": ""} for n in (record["names"] or []) if n],
+                })
+
+    return recon_data

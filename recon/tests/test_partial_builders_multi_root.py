@@ -67,6 +67,18 @@ BASEURLS = [
 ]
 GRAPH_DOMAINS = ["alpha.test", "beta.test", "gamma.test", "old.test"]
 
+# Serialized builder rows. "rO0ABXNy" is the inert Java-stream marker the scanner's
+# own tests use (base64 of the AC ED 00 05 stream magic): a detection fixture only.
+SER_HEADERS = [
+    # (response url, host, name, value)
+    ("https://www.alpha.test/app", "www.alpha.test", "set_cookie", "sess=rO0ABXNy; Path=/"),
+    ("https://www.alpha.test/app", "www.alpha.test", "set_cookie", "theme=dark; Path=/"),
+    ("https://www.alpha.test", "www.alpha.test", "server", "nginx"),
+    ("https://beta.test/x", "beta.test", "set_cookie", "sess=rO0ABXNy"),        # excluded apex
+    ("https://www.old.test/y", "www.old.test", "set_cookie", "sess=rO0ABXNy"),  # a stale root
+]
+SER_FORM_NAMES = ["__VIEWSTATE", "data"]
+
 
 class _Result(list):
     def single(self):
@@ -105,6 +117,22 @@ class _Session:
             for url, host in BASEURLS:
                 rows.append({"url": url, "host": host, "status_code": 200,
                              "content_type": "text/html", "is_cdn": False, "cdn": None, "asn": None})
+        elif "HAS_HEADER" in cypher:
+            for url, host, name, value in SER_HEADERS:
+                rows.append({"url": url, "host": host, "name": name, "value": value})
+        # the vuln-scan builder's parameter query reads sample_values too, so
+        # match the serialized builder's map key, not the bare property name
+        elif "sample_values: coalesce" in cypher:
+            for url, host in BASEURLS:
+                rows.append({"base": url, "host": host, "path": "/api/load", "method": "GET",
+                             # the OPTIONAL MATCH yields one null-name row for an
+                             # endpoint with no Parameter; the builder must skip it
+                             "params": [{"name": "data", "sample_values": ["rO0ABXNy"]},
+                                        {"name": None, "sample_values": []}]})
+        elif "form_input_names" in cypher:
+            for url, host in BASEURLS:
+                rows.append({"base": url, "host": host, "path": "/forms/aspnet",
+                             "method": "POST", "names": SER_FORM_NAMES})
         elif "HAS_ENDPOINT" in cypher and "base_url" in cypher:
             for url, _ in BASEURLS:
                 rows.append({"base_url": url, "endpoints": [{"path": "/x", "method": "GET"}],
@@ -300,6 +328,74 @@ class TestGraphqlBuilder:
     def test_a_legacy_call_is_unfiltered(self, graph):
         data = gb._build_graphql_data_from_graph("alpha.test", "u1", "p1", settings={})
         assert "https://www.old.test" in data["http_probe"]["by_url"]
+
+
+class TestSerializedBuilder:
+    """_build_serialized_data_from_graph: the partial serialized-object scan.
+
+    The first E2E found the partial re-detecting 0 candidates: it reused the
+    GraphQL builder, which zeroes response headers and drops every parameter.
+    This builder rebuilds the three sections the scanner reads.
+    """
+
+    def build(self, groups=GROUPS):
+        return gb._build_serialized_data_from_graph(ROOTS, "u1", "p1", settings={},
+                                                    domain_groups=groups)
+
+    def test_a_stale_host_is_dropped_everywhere(self, graph):
+        data = self.build()
+        assert not any("old.test" in u for u in data["http_probe"]["by_url"])
+        assert not any("old.test" in b for b in data["resource_enum"]["by_base_url"])
+        assert not any("old.test" in f["found_at"] for f in data["resource_enum"]["forms"])
+
+    def test_the_apex_rule_is_honoured(self, graph):
+        # Unlike the GraphQL builder, the serialized partial always honoured
+        # Include Root Domain: beta's group has no "." prefix.
+        by_url = self.build()["http_probe"]["by_url"]
+        assert "https://beta.test" not in by_url
+        assert "https://beta.test/x" not in by_url
+        assert "https://alpha.test" in by_url
+
+    def test_response_headers_are_rebuilt_per_response_url(self, graph):
+        by_url = self.build()["http_probe"]["by_url"]
+        # an endpoint URL that is not a BaseURL still gets its own entry, and a
+        # repeated header name (two Set-Cookie) keeps every value
+        assert by_url["https://www.alpha.test/app"]["headers"]["set_cookie"] == [
+            "sess=rO0ABXNy; Path=/", "theme=dark; Path=/"]
+        assert by_url["https://www.alpha.test"]["headers"] == {"server": ["nginx"]}
+
+    def test_parameters_keep_their_sample_values(self, graph):
+        eps = self.build()["resource_enum"]["by_base_url"]["https://www.alpha.test"]["endpoints"]
+        assert eps["/api/load"] == {"method": "GET",
+                                    "parameters": {"data": {"sample_values": ["rO0ABXNy"]}}}
+
+    def test_forms_carry_field_names_only(self, graph):
+        forms = [f for f in self.build()["resource_enum"]["forms"]
+                 if f["found_at"].startswith("https://www.alpha.test/")]
+        assert forms == [{"found_at": "https://www.alpha.test/forms/aspnet",
+                          "action": "https://www.alpha.test/forms/aspnet", "method": "POST",
+                          "inputs": [{"name": "__VIEWSTATE", "value": ""},
+                                     {"name": "data", "value": ""}]}]
+
+    def test_a_legacy_call_follows_the_subdomain_list_apex_rule(self, graph):
+        without = gb._build_serialized_data_from_graph(
+            "alpha.test", "u1", "p1", settings={"SUBDOMAIN_LIST": ["www."]})
+        assert "https://alpha.test" not in without["http_probe"]["by_url"]
+        assert "https://www.alpha.test" in without["http_probe"]["by_url"]
+        with_apex = gb._build_serialized_data_from_graph(
+            "alpha.test", "u1", "p1", settings={"SUBDOMAIN_LIST": ["www.", "."]})
+        assert "https://alpha.test" in with_apex["http_probe"]["by_url"]
+
+    def test_the_rebuilt_corpus_is_what_the_scanner_reads(self, graph):
+        from recon.serialized_scan import run_serialized_scan
+        data = self.build()
+        run_serialized_scan(data, {"SERIALIZED_SCAN_ENABLED": True})
+        found = {(f["deser_format"], f["deser_transport"], f["endpoint_url"])
+                 for f in data["serialized_scan"]["findings"]}
+        assert ("native_java", "cookie", "https://www.alpha.test/app") in found
+        assert ("native_java", "param", "https://www.alpha.test/api/load") in found
+        assert not any("old.test" in url or url.startswith("https://beta.test/")
+                       for _, _, url in found)
 
 
 class TestGraphUrlScope:

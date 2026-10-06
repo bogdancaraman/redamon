@@ -14,10 +14,8 @@ from urllib.parse import urlparse
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from recon.partial_recon_modules.graph_builders import _build_graphql_data_from_graph
+from recon.partial_recon_modules.graph_builders import _build_serialized_data_from_graph
 from recon.partial_recon_modules.helpers import (
-    _should_include_root_domain,
-    include_root_for,
     partial_settings,
     scope_roots,
 )
@@ -39,8 +37,6 @@ def run_serialized_scan_partial(config: dict) -> None:
     for key, value in (config.get("settings_overrides") or {}).items():
         settings[key] = value
 
-    include_root_domain = _should_include_root_domain(settings)
-
     user_targets = config.get("user_targets") or {}
     raw_user_urls = user_targets.get("urls") or []
     url_attach_to = user_targets.get("url_attach_to")
@@ -56,16 +52,21 @@ def run_serialized_scan_partial(config: dict) -> None:
 
     include_graph = config.get("include_graph_targets", True)
     if include_graph:
-        print("[*][Partial Recon] Querying graph for targets (BaseURLs, Endpoints)...")
-        recon_data = _build_graphql_data_from_graph(roots, user_id, project_id, settings=settings,
-                                                    domain_groups=config.get("domain_groups"))
+        print("[*][Partial Recon] Querying graph for targets "
+              "(BaseURLs, Endpoints, response headers, parameters, forms)...")
+        # The builder rebuilds the full serialized corpus the scanner reads -
+        # response headers + Set-Cookie, endpoints with parameter sample values,
+        # and form field names - and applies Include-Root-Domain scope itself.
+        recon_data = _build_serialized_data_from_graph(roots, user_id, project_id, settings=settings,
+                                                       domain_groups=config.get("domain_groups"))
     else:
         print("[*][Partial Recon] Skipping graph targets (user opted out)")
         recon_data = {
             "domain": roots[0] if roots else "",
             "domains": roots,
             "http_probe": {"by_url": {}},
-            "resource_enum": {"endpoints": {}, "parameters": {}, "discovered_urls": []},
+            "resource_enum": {"endpoints": {}, "parameters": {}, "by_base_url": {},
+                              "forms": [], "discovered_urls": []},
             "metadata": {
                 "roe": {
                     "ROE_ENABLED": settings.get("ROE_ENABLED", False),
@@ -74,35 +75,11 @@ def run_serialized_scan_partial(config: dict) -> None:
             },
         }
 
-    # Honor the Include Root Domain scope toggle (per root when groups are known).
-    groups = config.get("domain_groups")
-    if groups is None:
-        excluded_apexes = set() if include_root_domain else {r.lower() for r in roots}
-    else:
-        excluded_apexes = {r.lower() for r in roots if not include_root_for(r, groups)}
-    if excluded_apexes:
-        recon_data["http_probe"]["by_url"] = {
-            url: data for url, data in recon_data["http_probe"]["by_url"].items()
-            if (urlparse(url).hostname or "").lower() not in excluded_apexes
-        }
+    by_base_url = recon_data.get("resource_enum", {}).get("by_base_url", {})
 
-    # Reshape the graph builder's resource_enum["endpoints"] = {base: [{path,method}]}
-    # into the by_base_url shape the serialized scanner reads. Without this every
-    # graph Endpoint is silently dropped and only BaseURLs/cookies are scanned.
-    by_base_url: dict = {}
-    for base, eps in (recon_data.get("resource_enum", {}).get("endpoints", {}) or {}).items():
-        if (urlparse(base).hostname or "").lower() in excluded_apexes:
-            continue
-        ep_map = {}
-        for ep in (eps or []):
-            path = ep.get("path")
-            if path:
-                ep_map[path] = {"method": ep.get("method", "GET"), "parameters": {}}
-        if ep_map:
-            by_base_url[base] = {"endpoints": ep_map}
-    recon_data.setdefault("resource_enum", {})["by_base_url"] = by_base_url
-
-    # Inject user-provided URLs as live targets (http_probe.by_url entries).
+    # Inject user-provided URLs as live targets (http_probe.by_url entries). The
+    # modal gives a URL only, so there is no response data to attach; the scanner
+    # still checks the URL's own path/params.
     for u in user_urls:
         recon_data["http_probe"]["by_url"].setdefault(u, {
             "url": u, "host": urlparse(u).hostname or "", "status_code": 200,
