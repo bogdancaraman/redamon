@@ -1,8 +1,9 @@
 """The serialized-object assessment on Jev (plan §19).
 
 What it locks in:
-- the agent sees bounded, typed items, and never the deterministic format, so the
-  agreement it records is independent of the signature's verdict;
+- the agent sees bounded, typed evidence only: never the deterministic format nor
+  the marker label that names it, so the agreement it records is not Jev reading
+  the signature's verdict back; request-side blobs are asked about first;
 - candidates that share every Jev-visible field collapse to one question set; a
   different location is a different blob;
 - the closed format set is exactly what the detector can emit, so a new detector
@@ -18,6 +19,7 @@ What it locks in:
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from unittest import mock
@@ -54,7 +56,7 @@ def _finding(i=0, **over):
          "baseurl": f"http://h{i}.example.test", "path": "/login", "confidence": 0.9,
          "source": "serialized_scan", "deser_language": "java", "deser_format": "native_java",
          "deser_transport": "cookie", "deser_location": f"session_{i}",
-         "deser_encoding_layers": ["base64"], "deser_magic": "rO0AB",
+         "deser_encoding_layers": ["base64"], "deser_magic": "AC ED 00 05 (Java stream)",
          "evidence_snippet": f"rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA{i}"}
     f.update(over)
     return f
@@ -81,16 +83,34 @@ def _echo_post(label=("native_java", 80, 60), status=200, per_location=None):
 # Items, keys, the closed set
 # ---------------------------------------------------------------------------
 
-def test_the_request_item_is_bounded_typed_and_never_carries_the_baseline():
-    big = _finding(evidence_snippet="s" * 900, deser_magic="m" * 300, deser_location="l" * 900,
+def test_the_request_item_is_bounded_typed_and_evidence_only():
+    big = _finding(evidence_snippet="s" * 900, deser_location="l" * 900,
                    deser_transport="smtp", deser_encoding_layers=["rot13", "url"] + ["hex"] * 20)
     blob = sa._blob(big)
-    assert set(blob) == {"snippet", "magic", "transport", "location", "encoding_layers"}
+    assert set(blob) == {"snippet", "transport", "location", "encoding_layers"}
     assert len(blob["snippet"]) == sa.SNIPPET_CHARS == 200
-    assert len(blob["magic"]) == sa._MAGIC_CHARS and len(blob["location"]) == sa._LOCATION_CHARS
+    assert len(blob["location"]) == sa._LOCATION_CHARS
     assert blob["transport"] == ""                                   # outside the closed set
     assert blob["encoding_layers"] == ["url"] + ["hex"] * (sa._MAX_LAYERS - 1)
-    assert "native_java" not in str(blob)                            # no anchoring on the signature
+
+
+def test_the_request_never_names_the_format_the_signatures_matched():
+    """Every marker label names its family ("04 08 (Ruby Marshal)", "XStream FQCN
+    element"): sent along, it let Jev read the verdict back, so the agreement shadow
+    mode records measured nothing. Checked against every label the tables hold."""
+    from recon.serialized_scan import signatures
+    for row in signatures._TEXT + signatures._BYTES + signatures._HEADER_VALUES:
+        fmt, magic = row[1], row[3]
+        sent = json.dumps(sa._blob(_finding(deser_format=fmt, deser_magic=magic,
+                                            evidence_snippet="q9z8x7")))
+        assert magic not in sent and fmt not in sent, (fmt, magic)
+
+
+def test_the_location_is_sent_as_printable_ascii():
+    # A lone surrogate in a target-supplied name turned the agent's 422 into a 500.
+    blob = sa._blob(_finding(deser_location="x-lone-\udc80-ñ"))
+    assert blob["location"].isascii() and blob["location"].isprintable()
+    json.dumps(blob, ensure_ascii=False).encode("utf-8")
 
 
 def test_identical_blobs_share_a_key_and_a_different_location_does_not():
@@ -101,9 +121,8 @@ def test_identical_blobs_share_a_key_and_a_different_location_does_not():
 
 @pytest.mark.parametrize("finding,ok", [
     (_finding(), True),
-    (_finding(evidence_snippet=""), True),                           # the magic alone is a signal
+    (_finding(evidence_snippet=""), False),                          # a marker label is no evidence
     (_finding(deser_magic=""), True),
-    (_finding(evidence_snippet="", deser_magic=""), False),
 ])
 def test_a_candidate_without_any_signal_is_never_asked_about(finding, ok):
     assert sa._assessable(finding) is ok
@@ -165,6 +184,29 @@ def test_act_annotates_and_ranks_without_dropping_or_rewriting_the_format(monkey
             top["deser_jev_exploitability"], top["deser_jev_source"]) == \
         ("viewstate", 70, 90, "jev_classifier")
     assert "deser_jev_format" not in findings[-1]                   # unanswered keeps no annotation
+
+
+def test_act_never_ranks_a_none_answer_above_a_format(monkeypatch):
+    # "Not a serialized object" outranks Jev's own reachability guess for it.
+    monkeypatch.setattr(sa, "ROLLOUT", jev_shadow.ACT)
+    findings = [_finding(0), _finding(1)]
+    _, post = _echo_post(per_location={"session_0": ("none", 95, 99),
+                                       "session_1": ("native_java", 80, 40)})
+    with mock.patch.object(jev_shadow.requests, "post", side_effect=post):
+        sa.run_serialized_assess_pass(findings, user_id="u", project_id="p", recon_data={})
+    assert [f["deser_location"] for f in findings] == ["session_1", "session_0"]
+
+
+def test_request_side_blobs_are_asked_first_when_the_cap_cuts(monkeypatch):
+    # A response header a client never sends back is the one left unasked.
+    monkeypatch.setattr(sa, "MAX_BLOBS_PER_SCAN", 2)
+    findings = [_finding(0, deser_transport="header"), _finding(1, deser_transport="cookie"),
+                _finding(2, deser_transport="param")]
+    calls, post = _echo_post()
+    with mock.patch.object(jev_shadow.requests, "post", side_effect=post):
+        stats = sa.run_serialized_assess_pass(findings, user_id="u", project_id="p", recon_data={})
+    assert [b["location"] for c in calls for b in c["blobs"]] == ["session_2", "session_1"]
+    assert stats["not_asked"] == 1
 
 
 def test_identical_blobs_are_asked_once_and_all_get_the_answer():

@@ -13,11 +13,16 @@ format the signatures matched: `deser_format` is part of the candidate's graph
 id (`_vuln_id`), so changing it would split one sink into two nodes across runs.
 Jev's answer lands in separate `deser_jev_*` fields instead.
 
-Candidates whose Jev-visible fields are identical (snippet, magic, transport,
-location, encoding layers) collapse to one question set, so a session cookie that
-rides on every endpoint is asked about once; a failed batch is remembered too, so
-a failure never re-asks per candidate. Distinct blobs are bounded per scan
-(MAX_BLOBS_PER_SCAN) and the whole pass by a wall-clock budget.
+Jev is sent evidence only: the snippet, transport, location and encoding layers.
+Never the format the signatures matched, and never their marker label for it
+(`deser_magic`, e.g. "04 08 (Ruby Marshal)"), which names the format: the
+agreement shadow mode records would only measure Jev reading the label back.
+
+Candidates whose Jev-visible fields are identical collapse to one question set,
+so a session cookie that rides on every endpoint is asked about once; a failed
+batch is remembered too, so a failure never re-asks per candidate. Distinct blobs
+are bounded per scan (MAX_BLOBS_PER_SCAN) and the whole pass by a wall-clock
+budget, request-side blobs first.
 
 Kind B (no LLM twin), gated by AI_IN_PIPELINE and SERIALIZED_SCAN_JEV_RANK at the
 call site. ROLLOUT is SHADOW: Jev is asked every run and each decision is
@@ -38,6 +43,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from recon.helpers.ai_planner.jev_shadow import ACT, SHADOW, ShadowRecorder, jev_model, jev_post
+from recon.serialized_scan.normalizers import safe_snippet
 
 ROLLOUT = SHADOW
 
@@ -71,24 +77,27 @@ TIME_BUDGET_S = 60
 TIMEOUT = 30
 
 SNIPPET_CHARS = 200
-_MAGIC_CHARS = 64
 _LOCATION_CHARS = 200
 _MAX_LAYERS = 8
 
+#: Request-side blobs are asked about first, so when the cap or the time budget
+#: cuts the pass, what goes unasked is a response header a client never sends back.
+_TRANSPORT_PRIORITY = {"param": 0, "body": 0, "cookie": 1, "header": 2}
+
 
 def _blob(finding: dict) -> dict:
-    """The agent request item for one candidate: bounded, every field typed.
+    """The agent request item for one candidate: evidence only, bounded, typed.
 
-    The deterministic format is deliberately absent: Jev answers from the blob,
-    so the agreement it records is independent of the signature's verdict.
+    `location` is target text (a parameter, cookie or header name), escaped to
+    printable ASCII like the snippet: a lone surrogate in it once turned the
+    agent's 422 into a 500.
     """
     transport = str(finding.get("deser_transport") or "")
     layers = finding.get("deser_encoding_layers")
     return {
         "snippet": str(finding.get("evidence_snippet") or "")[:SNIPPET_CHARS],
-        "magic": str(finding.get("deser_magic") or "")[:_MAGIC_CHARS],
         "transport": transport if transport in TRANSPORTS else "",
-        "location": str(finding.get("deser_location") or "")[:_LOCATION_CHARS],
+        "location": safe_snippet(finding.get("deser_location") or "", _LOCATION_CHARS),
         "encoding_layers": [str(x) for x in (layers if isinstance(layers, list) else [])
                             if str(x) in LAYERS][:_MAX_LAYERS],
     }
@@ -97,14 +106,13 @@ def _blob(finding: dict) -> dict:
 def cache_key(finding: dict) -> str:
     """Exactly the fields Jev sees, so two candidates that share them share the answer."""
     blob = _blob(finding)
-    parts = [blob["snippet"], blob["magic"], blob["transport"], blob["location"],
-             ",".join(blob["encoding_layers"])]
+    parts = [blob["snippet"], blob["transport"], blob["location"], ",".join(blob["encoding_layers"])]
     return hashlib.sha256("\x1f".join(parts).encode("utf-8", "replace")).hexdigest()
 
 
 def _assessable(finding: dict) -> bool:
-    """A candidate with neither a snippet nor a magic marker gives Jev nothing to read."""
-    return bool(finding.get("evidence_snippet") or finding.get("deser_magic"))
+    """A candidate with no evidence snippet gives Jev nothing to read."""
+    return bool(finding.get("evidence_snippet"))
 
 
 def _pct(value) -> Optional[int]:
@@ -157,7 +165,8 @@ def run_serialized_assess_pass(findings: List[dict], *, user_id: str, project_id
             stats["candidates"] += 1
             groups.setdefault(cache_key(finding), []).append(i)
 
-        keys = list(groups)
+        keys = sorted(groups, key=lambda k: (
+            _TRANSPORT_PRIORITY.get(findings[groups[k][0]].get("deser_transport"), 3), groups[k][0]))
         if len(keys) > MAX_BLOBS_PER_SCAN:
             stats["not_asked"] = sum(len(groups[k]) for k in keys[MAX_BLOBS_PER_SCAN:])
             keys = keys[:MAX_BLOBS_PER_SCAN]
@@ -208,7 +217,7 @@ def run_serialized_assess_pass(findings: List[dict], *, user_id: str, project_id
                                   transport=finding.get("deser_transport"),
                                   location=finding.get("deser_location"),
                                   endpoint=finding.get("endpoint_url"))
-                if ROLLOUT != SHADOW:
+                if ROLLOUT == ACT:
                     finding["deser_jev_format"] = fmt
                     finding["deser_jev_format_confidence"] = conf
                     finding["deser_jev_exploitability"] = reach
@@ -227,11 +236,17 @@ def run_serialized_assess_pass(findings: List[dict], *, user_id: str, project_id
 
 def _rank_in_place(findings: List[dict]) -> None:
     """Answered candidates first by reachability, the rest after in their original
-    order. Re-orders only; never drops. Never raises."""
+    order. A "none" format answer ranks as unreachable whatever its reachability
+    guess: Jev saying the blob is not a serialized object outranks it. Re-orders
+    only; never drops. Never raises."""
+    def key(f):
+        reach = f.get("deser_jev_exploitability") if isinstance(f, dict) else None
+        if not isinstance(reach, int) or isinstance(reach, bool):
+            return (1, 0)
+        return (0, 0 if f.get("deser_jev_format") == "none" else -reach)
+
     try:
-        findings.sort(key=lambda f: (0, -f["deser_jev_exploitability"])
-                      if isinstance(f, dict) and isinstance(f.get("deser_jev_exploitability"), int)
-                      else (1, 0))
+        findings.sort(key=key)
     except Exception:  # noqa: BLE001 - an order is never worth breaking the scan
         pass
 

@@ -45,13 +45,19 @@ _TEXT = [
     (re.compile(r'O:\d+:"'), "php_serialize", "php", 'PHP O:<n>:"', 0.7),
     (re.compile(r"a:\d+:\{"), "php_serialize", "php", "PHP a:<n>:{", 0.6),
     (re.compile(r"phar://"), "phar", "php", "phar:// stream wrapper", 0.75),
-    # Python pickle base64 prefixes (proto 2 -> gAJ, proto 4/5 -> gASV).
-    (re.compile(r"gASV"), "python_pickle", "python", "base64 gASV (pickle proto 4/5)", 0.8),
-    (re.compile(r"gAJ[A-Za-z0-9+/]"), "python_pickle", "python", "base64 gAJ (pickle proto 2)", 0.75),
-    # .NET BinaryFormatter base64 and ASP.NET __VIEWSTATE field.
+    # Python pickle base64 prefixes (proto 2 -> gAJ, proto 4/5 -> gASV), only at the
+    # start of a base64 run: a 3-4 character prefix turns up by chance inside a
+    # long random run such as a ViewState.
+    (re.compile(r"(?<![A-Za-z0-9+/])gASV"), "python_pickle", "python",
+     "base64 gASV (pickle proto 4/5)", 0.8),
+    (re.compile(r"(?<![A-Za-z0-9+/])gAJ[A-Za-z0-9+/]"), "python_pickle", "python",
+     "base64 gAJ (pickle proto 2)", 0.75),
+    # .NET BinaryFormatter base64 and the ASP.NET __VIEWSTATE field, whose name is
+    # anchored at its end: __VIEWSTATEGENERATOR and __VIEWSTATEENCRYPTED ride beside
+    # every ViewState and are not serialized objects.
     (re.compile(r"AAEAAAD/////"), "dotnet_binaryformatter", "dotnet",
      "base64 AAEAAAD///// (BinaryFormatter)", 0.85),
-    (re.compile(r"__VIEWSTATE"), "viewstate", "dotnet", "__VIEWSTATE field", 0.5),
+    (re.compile(r"__VIEWSTATE(?![A-Za-z0-9_])"), "viewstate", "dotnet", "__VIEWSTATE field", 0.5),
 ]
 
 # --- Byte signatures: (prefix, format, language, magic, confidence) ----------

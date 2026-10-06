@@ -132,9 +132,9 @@ class TestSerializedGraphWriter(unittest.TestCase):
         self.assertNotIn("created_at", props)
 
     def test_vuln_id_is_deterministic_and_tenant_scoped(self):
-        a = _vuln_id("u1", "p1", "https://t", "/x", "c", "native_java", "m", "cookie")
-        b = _vuln_id("u1", "p1", "https://t", "/x", "c", "native_java", "m", "cookie")
-        cross = _vuln_id("u2", "p1", "https://t", "/x", "c", "native_java", "m", "cookie")
+        a = _vuln_id("u1", "p1", "https://t", "/x", "c", "native_java", "cookie")
+        b = _vuln_id("u1", "p1", "https://t", "/x", "c", "native_java", "cookie")
+        cross = _vuln_id("u2", "p1", "https://t", "/x", "c", "native_java", "cookie")
         self.assertEqual(a, b)
         self.assertNotEqual(a, cross)
         self.assertTrue(a.startswith("serialized_"))
@@ -142,9 +142,18 @@ class TestSerializedGraphWriter(unittest.TestCase):
     def test_vuln_id_distinguishes_transport(self):
         # F4: two candidates identical but for transport must NOT collapse onto
         # one node (dedup_key keeps them distinct, so the id must too).
-        as_cookie = _vuln_id("u1", "p1", "https://t", "/x", "c", "native_java", "m", "cookie")
-        as_param = _vuln_id("u1", "p1", "https://t", "/x", "c", "native_java", "m", "param")
+        as_cookie = _vuln_id("u1", "p1", "https://t", "/x", "c", "native_java", "cookie")
+        as_param = _vuln_id("u1", "p1", "https://t", "/x", "c", "native_java", "param")
         self.assertNotEqual(as_cookie, as_param)
+
+    def test_one_node_per_sink_and_format_whatever_marker_matched(self):
+        # The marker is evidence: a PHP object one run and an array the next is
+        # one sink, and a new id would prune its node and lose its triage state.
+        h, _ = self._run([_finding(deser_format="php_serialize", deser_magic='PHP O:<n>:"'),
+                          _finding(deser_format="php_serialize", deser_magic="PHP a:<n>:{")])
+        self.assertEqual(len({params["vuln_id"] for _, params in h.driver.calls}), 1)
+        h, _ = self._run([_finding(), _finding(deser_format="php_serialize")])
+        self.assertEqual(len({params["vuln_id"] for _, params in h.driver.calls}), 2)
 
     def test_candidate_written_even_without_endpoint(self):
         # OPTIONAL MATCH means the node is MERGEd regardless of anchor presence;

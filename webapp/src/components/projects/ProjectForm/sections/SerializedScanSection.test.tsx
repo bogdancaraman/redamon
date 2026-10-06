@@ -52,6 +52,16 @@ describe('SerializedScanSection', () => {
     expect(screen.queryByText(/captured request traffic/)).toBeNull()
   })
 
+  test('the Jev ranking control shows only while the scan is on', () => {
+    // As in the sibling sections: a hook whose scan is off never runs, so a switch
+    // there would pass the token check for nothing.
+    renderSection({ serializedScanEnabled: false, aiInPipeline: true })
+    expect(screen.queryByRole('group', { name: 'Jev hook' })).toBeNull()
+    cleanup()
+    renderSection({ serializedScanEnabled: true, aiInPipeline: true, captureProxyEnabled: true })
+    expect(screen.getByRole('group', { name: 'Jev hook' })).toBeTruthy()
+  })
+
   test('no warnings when the scan is off', () => {
     renderSection({ serializedScanEnabled: false, captureProxyEnabled: false })
     expect(screen.queryByText(/captured request traffic/)).toBeNull()

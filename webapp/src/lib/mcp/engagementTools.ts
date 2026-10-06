@@ -527,7 +527,8 @@ const ALLOWED_IMAGE_SUFFIX = 'DockerImage'
 /**
  * The recon hooks that can run on Jev. An `engine` hook is an LLM hook with an
  * LLM | Jev switch: false means the LLM. An `enable` hook is Jev-only: false
- * means the hook is off and the step runs without AI.
+ * means the hook is off and the step runs without AI. `requires` names a scan
+ * that is off by default and without which the hook never runs.
  */
 const AI_HOOKS = [
   { hook: 'ffuf_extensions', engineField: 'ffufAiUseJev', kind: 'engine' },
@@ -538,7 +539,8 @@ const AI_HOOKS = [
   { hook: 'page_type', engineField: 'httpxJevPageType', kind: 'enable' },
   { hook: 'tool_health', engineField: 'resourceEnumJevToolHealth', kind: 'enable' },
   { hook: 'crawl_seed_order', engineField: 'hakrawlerJevSeedOrder', kind: 'enable' },
-  { hook: 'serialized_assess', engineField: 'serializedScanJevRank', kind: 'enable' },
+  { hook: 'serialized_assess', engineField: 'serializedScanJevRank', kind: 'enable',
+    requires: 'serializedScanEnabled' },
 ] as const
 
 /**
@@ -568,12 +570,15 @@ async function resolveAiHooks(row: Record<string, unknown>, ownerUserId: string)
     }
   }
 
-  return AI_HOOKS.map(({ hook, engineField, kind }) => {
+  return AI_HOOKS.map((h) => {
+    const { hook, engineField, kind } = h
     const onJev = row[engineField] === true
     const engine = onJev ? 'jev' : kind === 'engine' ? 'llm' : 'off'
+    const requires = 'requires' in h ? h.requires : null
     let effective: string
     if (!aiOn) effective = 'off'
     else if (!onJev) effective = engine
+    else if (requires && row[requires] !== true) effective = `off (${requires} is false)`
     else if (ownerHasToken === true) effective = 'jev'
     else if (ownerHasToken === false) effective = 'jev → static fallback (no Jev token on the owner\'s account)'
     else effective = 'jev (could not check the owner\'s Jev token)'

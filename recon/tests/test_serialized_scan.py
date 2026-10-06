@@ -7,9 +7,12 @@ render-safe evidence snippet.
 """
 
 import base64
+import contextlib
 import copy
 import gzip
+import io
 import unittest
+from unittest import mock
 
 from recon.serialized_scan import (
     decoders,
@@ -372,16 +375,19 @@ class TestScanner(unittest.TestCase):
     def test_one_value_is_one_candidate_per_format(self):
         # Live E2E finding: base64 Java matched as `rO0AB` text AND as the decoded
         # AC ED 00 05 bytes, so one param became two candidates, and confirming one
-        # left its twin pending. Each blob is 27 bytes, so its base64 needs no
-        # padding, with varied bytes: the decoder skips a low-entropy base64 run.
+        # left its twin pending. The byte signature wins, with the layers peeled to
+        # reach it. Each blob is 27 bytes, so its base64 needs no padding, with
+        # varied bytes: the decoder skips a low-entropy base64 run.
         java = b"\xac\xed\x00\x05sr\x00\x13java.util.ArrayList"
         cases = [
-            (base64.b64encode(java).decode(), "native_java", "base64 rO0AB (AC ED 00 05)", ["base64"]),
-            (java.hex(), "native_java", "hex aced0005", ["hex"]),
+            (base64.b64encode(java).decode(), "native_java", "AC ED 00 05 (Java stream)", ["base64"]),
+            (java.hex(), "native_java", "AC ED 00 05 (Java stream)", ["hex"]),
+            (base64.b64encode(gzip.compress(java)).decode(), "native_java",
+             "AC ED 00 05 (Java stream)", ["base64", "gzip"]),
             (base64.b64encode(b"\x80\x04\x95" + bytes(range(65, 89))).decode(), "python_pickle",
-             "base64 gASV (pickle proto 4/5)", ["base64"]),
+             "80 04 (pickle proto 4)", ["base64"]),
             (base64.b64encode(b"\x00\x01\x00\x00\x00\xff\xff\xff\xff" + bytes(range(97, 115))).decode(),
-             "dotnet_binaryformatter", "base64 AAEAAAD///// (BinaryFormatter)", ["base64"]),
+             "dotnet_binaryformatter", "00 01 00 00 00 FF FF FF FF (BinaryFormatter)", ["base64"]),
         ]
         for value, fmt, magic, layers in cases:
             with self.subTest(fmt=fmt, magic=magic):
@@ -393,16 +399,110 @@ class TestScanner(unittest.TestCase):
                 self.assertEqual([(f["deser_format"], f["deser_magic"], f["deser_encoding_layers"])
                                   for f in findings], [(fmt, magic, layers)])
 
-    def test_a_cookie_candidate_keeps_the_chain_its_value_decodes_through(self):
-        # The whole Set-Cookie header is scanned first and decodes to nothing; the
-        # candidate must still record the cookie value's base64 layer.
-        java = base64.b64encode(b"\xac\xed\x00\x05sr\x00\x13java.util.ArrayList").decode()
-        cr = {"http_probe": {"by_url": {"https://t/": {
-            "url": "https://t/", "content_type": "text/html",
-            "headers": {"set_cookie": f"sess={java}; Path=/; HttpOnly"}}}}}
-        findings = run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": True})["serialized_scan"]["findings"]
-        self.assertEqual([(f["deser_format"], f["deser_transport"], f["deser_encoding_layers"])
-                          for f in findings], [("native_java", "cookie", ["base64"])])
+    @staticmethod
+    def _probe(headers, content_type="text/html"):
+        return {"http_probe": {"by_url": {"https://t.example.test/": {
+            "url": "https://t.example.test/", "content_type": content_type, "headers": headers}}}}
+
+    @staticmethod
+    def _seen(cr):
+        return [(f["deser_format"], f["deser_transport"], f["deser_location"], f["deser_encoding_layers"])
+                for f in run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": True})["serialized_scan"]["findings"]]
+
+    JAVA_B64 = base64.b64encode(b"\xac\xed\x00\x05sr\x00\x13java.util.ArrayList").decode()
+
+    def test_a_cookie_candidate_sits_at_its_name_with_the_layers_its_value_needs(self):
+        # The cookie's own name is what the agent tampers with, not the Set-Cookie
+        # header that carried it; the whole header decodes to nothing, the value does.
+        cr = self._probe({"set_cookie": f"sess={self.JAVA_B64}; Path=/; HttpOnly"})
+        self.assertEqual(self._seen(cr), [("native_java", "cookie", "sess", ["base64"])])
+
+    def test_every_cookie_a_header_sets_is_scanned_and_attributes_are_not_cookies(self):
+        b64 = self.JAVA_B64
+        as_list = self._probe({"set_cookie": [f"sess={b64}; Path=/",
+                                              f"prefs={b64}; Expires=Wed, 21 Oct 2026 07:28:00 GMT"]})
+        as_string = self._probe(f"Set-Cookie: sess={b64}; Path=/\nSet-Cookie: prefs={b64}; HttpOnly")
+        for cr in (as_list, as_string):
+            with self.subTest(shape=type(cr["http_probe"]["by_url"]["https://t.example.test/"]["headers"])):
+                self.assertEqual([loc for _, _, loc, _ in self._seen(cr)], ["sess", "prefs"])
+
+    def test_an_unrelated_escape_elsewhere_in_a_header_never_decides_the_layers(self):
+        # A %2F in another query param url-decodes the whole header; the blob in
+        # `state=` is base64, and that is what the agent must re-apply.
+        cr = self._probe({"location": f"https://t.example.test/cb?next=%2Fhome&state={self.JAVA_B64}"})
+        self.assertEqual(self._seen(cr), [("native_java", "header", "location", ["base64"])])
+
+    def test_one_header_spelled_three_ways_is_one_candidate(self):
+        # The probe's content_type field and httpx's content_type header are the
+        # same Content-Type: two spellings made two candidates.
+        ct = "application/x-java-serialized-object"
+        self.assertEqual(self._seen(self._probe({"content_type": ct}, content_type=ct)),
+                         [("native_java", "header", "content-type", [])])
+
+    def test_two_samples_of_one_sink_are_one_candidate(self):
+        # The matched marker is evidence, not identity: base64 and gzip Java, or a
+        # PHP object and a PHP array, at one parameter are one sink each.
+        java = b"\xac\xed\x00\x05sr\x00\x13java.util.ArrayList"
+        cases = {"java": [base64.b64encode(java).decode(), base64.b64encode(gzip.compress(java)).decode()],
+                 "php": ['O:4:"User":1:{s:1:"a";i:1;}', 'a:1:{i:0;s:1:"b";}']}
+        for name, samples in cases.items():
+            with self.subTest(name):
+                cr = {"resource_enum": {"by_base_url": {"https://t.example.test": {"endpoints": {"/load": {
+                    "methods": ["GET"], "parameters": {"query": [{"name": "data", "sample_values": samples}]}}}}}}}
+                self.assertEqual([loc for _, _, loc, _ in self._seen(cr)], ["data"])
+
+    def test_a_marker_readable_as_is_records_no_layers(self):
+        # The %2F url-decodes the whole header, but the JSON needs no decoding: the
+        # layers are the ones peeled to reach the hit, not the value's whole chain.
+        cr = self._probe({"location": 'x=%2Fhome&y={"@class":"a.B"}'})
+        self.assertEqual(self._seen(cr), [("jackson_json", "header", "location", [])])
+
+    def test_the_viewstate_neighbours_are_not_viewstates(self):
+        # __VIEWSTATEGENERATOR and __VIEWSTATEENCRYPTED ride beside every ViewState.
+        cr = {"resource_enum": {"forms": [self._form(inputs=[
+            {"name": "__VIEWSTATE", "value": ""}, {"name": "__VIEWSTATEGENERATOR", "value": "CA0B0334"},
+            {"name": "__VIEWSTATEENCRYPTED", "value": ""}])]}}
+        self.assertEqual(self._seen(cr), [("viewstate", "param", "__VIEWSTATE", [])])
+
+    def test_a_pickle_prefix_counts_only_at_the_start_of_a_base64_run(self):
+        # Inside a long random run (a ViewState) "gAJ" + one char turns up by chance.
+        noise = base64.b64encode(bytes((i * 37 + 11) % 256 for i in range(3000))).decode()
+        inside = noise[:500] + "gAJx" + noise[504:]
+        at_start = base64.b64encode(b"\x80\x02}q\x00(X\x01").decode()
+        for value, fmts in ((inside, []), (at_start, ["python_pickle"])):
+            with self.subTest(at_start=value is at_start):
+                cr = {"resource_enum": {"forms": [self._form(inputs=[{"name": "blob", "value": value}])]}}
+                self.assertEqual([f for f, *_ in self._seen(cr)], fmts)
+
+    def test_a_malformed_form_action_costs_that_form_only(self):
+        # urljoin/urlparse raise on a bad IPv6 host; it used to empty the whole
+        # result, and print the host (which read as a port scan to the drawer).
+        cr = self._probe({"set_cookie": f"sess={self.JAVA_B64}"})
+        cr["resource_enum"] = {"forms": [self._form(action="https://[port-scan]/x")]}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            seen = self._seen(cr)
+        self.assertEqual(seen, [("native_java", "cookie", "sess", ["base64"])])
+        self.assertNotIn("port-scan", out.getvalue())
+
+    def test_an_error_prints_no_target_text_and_writes_no_partial_result(self):
+        # Empty, not partial: a partial result would let the run prune candidates the
+        # failed part never re-checked.
+        cr = self._probe({"set_cookie": f"sess={self.JAVA_B64}"})
+        out = io.StringIO()
+        with mock.patch("recon.serialized_scan.scanner._scan_forms",
+                        side_effect=RuntimeError("https://portal-scan.example.test")), \
+                contextlib.redirect_stdout(out):
+            result = run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": True})
+        self.assertEqual(result["serialized_scan"]["findings"], [])
+        self.assertIn("RuntimeError", out.getvalue())
+        self.assertNotIn("example.test", out.getvalue())
+
+    def test_a_failing_jev_pass_never_costs_the_candidates(self):
+        cr = self._probe({"set_cookie": f"sess={self.JAVA_B64}"})
+        with mock.patch("recon.helpers.ai_planner.serialized_assess.run_for_scan",
+                        side_effect=RuntimeError("wiring")):
+            self.assertEqual(len(self._seen(cr)), 1)
 
     def test_two_formats_in_one_value_stay_two_candidates(self):
         cr = {"resource_enum": {"forms": [self._form(inputs=[

@@ -43,10 +43,14 @@ vi.mock('@/lib/access', async () => {
 
 import { PUT } from './route'
 
+const JEV_ONLY = ['ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth',
+  'hakrawlerJevSeedOrder', 'serializedScanJevRank'] as const
+
 const STORED = {
   id: 'proj-1', userId: 'owner', name: 'p', targetDomain: 'example.test',
   ipMode: false, domainBatchMode: false, katanaDepth: 2,
   ffufAiUseJev: false, nucleiTagsAiUseJev: false, wafAiUseJev: false, takeoverAiUseJev: false,
+  ...Object.fromEntries(JEV_ONLY.map(k => [k, false])),
   updatedAt: new Date('2026-09-29T10:00:00.000Z'),
 }
 
@@ -67,7 +71,12 @@ beforeEach(() => {
   vi.clearAllMocks()
   stored = { ...STORED }
   mockActor.mockResolvedValue({ userId: 'owner', isAdmin: false })
-  mockFindUnique.mockImplementation(async () => ({ ...stored }))
+  // Honour `select` the way Prisma does. Returning the whole row hid a route that
+  // read only four engine fields: every Jev-only true read back as a switch-on.
+  mockFindUnique.mockImplementation(async (args?: { select?: Record<string, unknown> }) => {
+    if (!args?.select) return { ...stored }
+    return Object.fromEntries(Object.keys(args.select).filter(k => args.select![k]).map(k => [k, stored[k]]))
+  })
   mockUpdate.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({ ...stored, ...data }))
   mockUpdateMany.mockResolvedValue({ count: 1 })
   mockTokenCount.mockResolvedValue(0)
@@ -114,6 +123,14 @@ describe('PUT: a stored Jev choice is never a reason to refuse a save', () => {
     stored.ffufAiUseJev = true
     stored.wafAiUseJev = true
     const res = await put({ name: 'p', katanaDepth: 4, ffufAiUseJev: true, wafAiUseJev: true })
+    expect(res.status).toBe(200)
+    expect(mockTokenCount).not.toHaveBeenCalled()
+    expect(mockUpdate.mock.calls[0][0].data.katanaDepth).toBe(4)
+  })
+
+  test.each(JEV_ONLY)('an unchanged Jev-only %s=true with no token still saves an unrelated field', async (field) => {
+    stored[field] = true
+    const res = await put({ name: 'p', katanaDepth: 4, [field]: true })
     expect(res.status).toBe(200)
     expect(mockTokenCount).not.toHaveBeenCalled()
     expect(mockUpdate.mock.calls[0][0].data.katanaDepth).toBe(4)

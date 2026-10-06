@@ -86,14 +86,15 @@ export function SerializedScanSection({ data, updateField, onRun }: SerializedSc
       {isOpen && (
         <div className={styles.sectionContent}>
           <p className={styles.sectionDescription}>
-            Scans the response headers, Set-Cookie values and enumerated parameters the pipeline already holds
-            for serialized-object signatures: native Java, polymorphic JSON (Jackson/FastJSON), XMLDecoder,
-            XStream, SnakeYAML, PHP, Python pickle, .NET BinaryFormatter / ViewState, Ruby Marshal and Hessian.
-            It is passive and in-memory, sends no extra traffic and never deserializes anything. Each hit becomes
-            an info-severity candidate the agent&apos;s deserialization skill confirms with a non-destructive
-            out-of-band oracle.
+            Scans the response headers, Set-Cookie values, enumerated parameters and crawled form fields the
+            pipeline already holds for serialized-object signatures: native Java, polymorphic JSON
+            (Jackson/FastJSON), XMLDecoder, XStream, SnakeYAML, PHP, Python pickle, .NET BinaryFormatter /
+            ViewState, Ruby Marshal and Hessian. It is passive and in-memory, sends no extra traffic and never
+            deserializes anything. Each format a value carries becomes one info-severity candidate, which the
+            agent&apos;s deserialization skill confirms with a non-destructive out-of-band oracle.
           </p>
 
+          {enabled && (
           <div className={styles.toggleRow} style={{ alignItems: 'center', gap: 'var(--space-2)' }}>
             <AiToggleLabel
               label="Rank candidates with Jev"
@@ -117,6 +118,7 @@ export function SerializedScanSection({ data, updateField, onRun }: SerializedSc
               onSelect={(on) => updateField('serializedScanJevRank', on)}
             />
           </div>
+          )}
 
           {enabled && !deserSkillOn && (
             <p className={`${styles.fieldHint} ${styles.fieldHintCaution}`} role="alert">

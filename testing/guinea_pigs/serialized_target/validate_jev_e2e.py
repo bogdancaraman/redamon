@@ -9,8 +9,8 @@ setup proves the MCP surface: describe_recon_settings lists serializedScanJevRan
 settable field and its notes explain the Jev-only ranking; a fresh project stores it
 false; update_recon_settings turns it on and off, and preflight_scope_check follows
 (serialized_assess: off -> jev -> off); then it is switched on and the recon starts.
-It needs a Jev token on the MCP token owner's account (switching it on is refused
-otherwise, which this also proves).
+It needs a Jev token on the MCP token owner's account: without one, switching the
+flag on is refused and setup fails at that check.
 
 verify proves the run: every family in expected_results.yaml's
 live_in_memory_formats is a serialized_scan candidate in the graph (the other

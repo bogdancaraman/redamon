@@ -121,13 +121,6 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // A new project starts with every engine on the LLM, so any Jev flag in the
-    // body is a switch-on and needs a Jev token on the creating user's account.
-    const jevError = await validateJevEngineChange(null, optionalParams, userId)
-    if (jevError) {
-      return NextResponse.json({ error: jevError }, { status: 400 })
-    }
-
     // A client-supplied id becomes the project's primary key AND a path/pattern
     // component downstream (recon output filenames, the orchestrator's
     // /project/<id>/files URL, the JS-recon upload directories). Anything but a
@@ -312,6 +305,15 @@ export async function POST(request: NextRequest) {
     }
     if (typeof sanitizedParams.targetIps === 'object' && Array.isArray(sanitizedParams.targetIps)) {
       sanitizedParams.targetIps = (sanitizedParams.targetIps as string[]).map(s => s.trim()).filter(Boolean)
+    }
+
+    // A new project starts with every engine on the LLM, so any Jev flag in the
+    // body is a switch-on and needs a Jev token on the creating user's account.
+    // Judged on the coerced values: the string "true" becomes true above, and
+    // checking the raw body let it through.
+    const jevError = await validateJevEngineChange(null, sanitizedParams, userId)
+    if (jevError) {
+      return NextResponse.json({ error: jevError }, { status: 400 })
     }
 
     // Create project with required fields and valid optional params.

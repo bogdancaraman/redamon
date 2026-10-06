@@ -47,7 +47,7 @@ TOOL_HEALTH_BODY = {"tool": "katana", "return_code": 0, "elapsed_s": 3.5, "seed_
 CRAWL_SEED_BODY = {"hosts": [{"hostname": "a.example.test", "title": "x"},
                              {"hostname": "b.example.test"}],
                    "user_id": "u1", "project_id": "p1"}
-SERIALIZED_BODY = {"blobs": [{"snippet": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA", "magic": "rO0AB",
+SERIALIZED_BODY = {"blobs": [{"snippet": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA",
                               "transport": "cookie", "location": "session",
                               "encoding_layers": ["base64"]}],
                    "user_id": "u1", "project_id": "p1"}
@@ -217,12 +217,31 @@ def test_serialized_success_shape(client):
     assert CANARY not in resp.text
 
 
-def test_serialized_blob_with_no_signal_is_422_and_never_reaches_jev(client):
-    body = {**SERIALIZED_BODY, "blobs": [{"snippet": "", "magic": "", "transport": "cookie"}]}
-    with patch("jev_client.system_one", AsyncMock()) as jev:
-        resp = _post(client, "/jev/serialized-classify", body)
+@pytest.mark.parametrize("blob", [
+    {"snippet": "", "transport": "cookie"},
+    # The old contract's marker label alone: it names the format, and is no evidence.
+    {"magic": "AC ED 00 05 (Java stream)", "transport": "cookie"},
+])
+def test_serialized_blob_with_no_snippet_is_422_and_never_reaches_jev(client, blob):
+    # Owner and token in place, so only the model's refusal keeps this from Jev.
+    with _owner_ok(), _providers([JEV_ROW]), patch("jev_client.system_one", AsyncMock()) as jev:
+        resp = _post(client, "/jev/serialized-classify", {**SERIALIZED_BODY, "blobs": [blob]})
     assert resp.status_code == 422
     jev.assert_not_called()
+
+
+def test_a_lone_surrogate_in_a_refused_body_is_a_422_not_a_500(client):
+    """FastAPI's default 422 echoes the refused input, and its UTF-8 render raised on
+    a lone surrogate, so the 422 became a 500. Sent pre-encoded: json.dumps escapes
+    the surrogate, the way recon's requests.post does."""
+    cl, _ = client
+    blob = {"snippet": "rO0AB", "location": "x-lone-\udc80"}
+    with patch.dict(os.environ, {"INTERNAL_API_KEY": "s3cret"}):
+        resp = cl.post("/jev/serialized-classify",
+                       headers={"X-Internal-Key": "s3cret", "content-type": "application/json"},
+                       content=_json.dumps({**SERIALIZED_BODY, "blobs": [blob]}))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]                        # the same body FastAPI renders
 
 
 @pytest.mark.parametrize("blob", [
@@ -447,11 +466,13 @@ def test_crawl_seed_order_success_shape(client):
 
 @pytest.mark.parametrize("path,questions", [
     ("/jev/ffuf-base-paths", 3), ("/jev/page-type", 5), ("/jev/tool-health", 1),
-    ("/jev/crawl-seed-order", 2),
+    ("/jev/crawl-seed-order", 2), ("/jev/serialized-classify", 2),
 ])
 def test_the_per_item_log_line_counts_the_questions_asked(client, caplog, path, questions):
     caplog.set_level(logging.INFO)
-    with _owner_ok(), _providers([JEV_ROW]), _mock_typesafe(_noul_answers_for):
+    # serialized-classify asks a choice, which a noul-only answer would fail.
+    answers = _valid_answers if path == "/jev/serialized-classify" else _noul_answers_for
+    with _owner_ok(), _providers([JEV_ROW]), _mock_typesafe(answers):
         _post(client, path, PATHS[path])
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("jev ")]
     assert any(f" questions={questions} model=jev-1.13.0 " in ln and ln.endswith(" ok") for ln in lines), lines
@@ -472,3 +493,18 @@ def test_a_jev_answer_out_of_range_fails_the_per_item_hook_closed(client):
             resp = _post(client, path, PATHS[path])
         assert resp.status_code == 503, (path, resp.text)
         assert resp.json()["error_type"] == "jev_bad_response"
+
+
+def test_a_serialized_answer_out_of_range_fails_closed(client):
+    """A valid format choice with an exploitability above 1 is a forged score:
+    the whole call is a 503, never a label recon would record."""
+    def over_one(req):
+        resp = _valid_answers(req)
+        body = _json.loads(resp.content)
+        body["answers"]["exploitable"]["noul"] = 1.5
+        return httpx.Response(200, json=body)
+
+    with _owner_ok(), _providers([JEV_ROW]), _mock_typesafe(over_one):
+        resp = _post(client, "/jev/serialized-classify", SERIALIZED_BODY)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error_type"] == "jev_bad_response"

@@ -13,6 +13,7 @@ Endpoints:
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import re
@@ -23,6 +24,8 @@ from typing import Any, List, Literal, Optional
 import httpx
 import websockets
 from fastapi import Depends, FastAPI, File, Form, Query, UploadFile, WebSocket
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -149,6 +152,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class _AsciiJSONResponse(JSONResponse):
+    def render(self, content: Any) -> bytes:
+        return json.dumps(content, ensure_ascii=True, allow_nan=False,
+                          separators=(",", ":")).encode("ascii")
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_error(request, exc: RequestValidationError):
+    # FastAPI's default handler, rendered ASCII-escaped. It echoes the rejected
+    # input, and a lone surrogate in it (a target string recon passed through)
+    # fails the UTF-8 render, which turned a 422 into a 500.
+    return _AsciiJSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 
 
 # =============================================================================
@@ -1377,19 +1394,14 @@ class CrawlSeedOrderRequest(BaseModel):
 
 
 class SerializedBlobItem(BaseModel):
-    snippet: str = Field(default="", max_length=200)
-    magic: str = Field(default="", max_length=64)
+    # Evidence only: no field carries the format the signatures matched or their
+    # label for it, so Jev's format answer stays its own reading of the blob. A
+    # blank snippet is refused: Jev is never asked about nothing.
+    snippet: str = Field(min_length=1, max_length=200)
     transport: Literal["cookie", "header", "param", "body", ""] = ""
     location: str = Field(default="", max_length=300)
     encoding_layers: List[Literal["url", "base64", "gzip", "zlib", "hex", "truncated"]] = Field(
         default_factory=list, max_length=8)
-
-    @model_validator(mode="after")
-    def _has_signal(self):
-        # Never ask Jev about nothing: recon filters these out, this refuses them.
-        if not self.snippet and not self.magic:
-            raise ValueError("a blob needs a snippet or a magic marker")
-        return self
 
 
 class SerializedClassifyRequest(BaseModel):

@@ -508,7 +508,7 @@ async def crawl_seed_order(key: str, hosts: list) -> dict:
 
 #: The closed format set: recon's deser_format vocabulary
 #: (serialized_assess.FORMATS) plus "none", for a blob that is not a serialized
-#: object. test_jev_catalog_contract.py holds the two equal, or recon would
+#: object. test_jev_item_contract.py holds the two equal, or recon would
 #: reject every answer naming a format it does not know.
 SERIALIZED_FORMATS = (
     "native_java", "jackson_json", "fastjson", "xmldecoder", "xstream", "snakeyaml",
@@ -538,18 +538,31 @@ _SERIALIZED_FORMAT_GUIDE = (
 )
 
 _BLOB_SNIPPET_CHARS = 200
-_BLOB_MAGIC_CHARS = 64
+
+#: Where the scanner saw the blob, keyed by recon's transport, so the reachability
+#: answer can tell a value the client sends from one it only receives.
+_SERIALIZED_OBSERVED_IN = {
+    "cookie": "a Set-Cookie value in a response, which the client sends back on later requests",
+    "header": "a response header, which a client does not normally send back",
+    "param": "a request parameter or form field, which the client sends to the server",
+    "body": "a request body field, which the client sends to the server",
+}
 
 
 def _blob_state(blob: dict) -> dict:
-    """One blob's state: recon's closed values plain, every target-derived string wrapped."""
+    """One blob's state: recon's closed values plain, every target-derived string wrapped.
+
+    Evidence only. Recon never sends the format its signatures matched, nor their
+    label for it, so the format answer is Jev's own reading of the blob.
+    """
     transport = blob.get("transport")
+    transport = transport if transport in SERIALIZED_TRANSPORTS else ""
     layers = blob.get("encoding_layers") if isinstance(blob.get("encoding_layers"), list) else []
     return {
-        "transport": transport if transport in SERIALIZED_TRANSPORTS else "",
+        "transport": transport,
+        "observed_in": _SERIALIZED_OBSERVED_IN.get(transport, "unknown"),
         "encoding_layers": [x for x in layers if x in SERIALIZED_LAYERS],
         "location": wrap_untrusted(_clip(blob.get("location"), _PAGE_FIELD_CHARS), label="TARGET_PARAM"),
-        "magic": wrap_untrusted(_clip(blob.get("magic"), _BLOB_MAGIC_CHARS), label="TARGET_MARKER"),
         "snippet": wrap_untrusted(_clip(blob.get("snippet"), _BLOB_SNIPPET_CHARS), label="TARGET_BLOB"),
     }
 
@@ -573,9 +586,12 @@ async def serialized_classify(key: str, blobs: list) -> dict:
         },
         "exploitable": _noul(
             "The serialized object in the state is likely to reach a server-side "
-            "deserializer from input an attacker controls: it travels in a request the "
-            "client can tamper with (a cookie, parameter, header or body field) and its "
-            "format can carry attacker-chosen types or objects.",
+            "deserializer from input an attacker controls. The state's observed_in says "
+            "where it was seen: a value the client sends to the server (a request "
+            "parameter, a form field, a cookie it sends back) can be tampered with, while "
+            "a response header the client never sends back rarely reaches a deserializer. "
+            "Its format must also be able to carry attacker-chosen types or objects, which "
+            "a blob that is not a serialized object at all cannot.",
             true="An attacker-reachable deserialization sink",
             false="Not attacker-reachable, or not deserialized on the server"),
     }

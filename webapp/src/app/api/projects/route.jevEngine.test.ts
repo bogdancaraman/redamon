@@ -105,6 +105,15 @@ describe('POST: a new project turning on a Jev-only hook', () => {
       expect(mockProjectCreate).not.toHaveBeenCalled()
     })
 
+  test.each(['true', 'TRUE'])('the string "%s" is a switch-on too', async (value) => {
+    // The body is coerced to booleans after it is read; judging the raw body let a
+    // string through to a project created with the flag on and no token.
+    const res = await POST(postReq({ ...base, serializedScanJevRank: value }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('serializedScanJevRank')
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
   test('the form sends every Jev-only flag as false: no switch-on, no lookup', async () => {
     const res = await POST(postReq({
       ...base, ffufJevBasePaths: false, httpxJevPageType: false, resourceEnumJevToolHealth: false,

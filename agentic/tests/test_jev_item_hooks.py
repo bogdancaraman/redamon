@@ -380,7 +380,7 @@ def test_the_largest_page_stays_far_under_the_request_budget():
 # serialized_classify: one blob per request, a closed choice plus one noul
 # ---------------------------------------------------------------------------
 
-BLOB = {"snippet": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA", "magic": "rO0AB",
+BLOB = {"snippet": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA",
         "transport": "cookie", "location": "session", "encoding_layers": ["base64"]}
 
 
@@ -396,7 +396,7 @@ def _serialized_fake(fmt="native_java", conf=0.8, noul=0.6, calls=None):
 
 
 def test_serialized_asks_a_closed_choice_and_one_noul_with_fixed_wording():
-    hostile = dict(BLOB, snippet=HOSTILE, location=HOSTILE, magic=HOSTILE[:60])
+    hostile = dict(BLOB, snippet=HOSTILE, location=HOSTILE)
     calls = []
     with patch("jev_client.system_one", _serialized_fake(calls=calls)):
         _run(jev_hooks.serialized_classify(KEY, [hostile]))
@@ -404,9 +404,29 @@ def test_serialized_asks_a_closed_choice_and_one_noul_with_fixed_wording():
     assert set(qs) == {"format", "exploitable"}
     assert qs["format"]["type"] == "choice"
     assert set(qs["format"]["criteria"]) == set(jev_hooks.SERIALIZED_FORMATS)
+    assert all(v is None for v in qs["format"]["criteria"].values())   # no text rides in a criterion
     assert qs["exploitable"]["type"] == "noul"
+    assert "observed_in" in str(qs["exploitable"])                    # the question reads where it was seen
     assert HOSTILE not in _instructions(calls)
-    assert HOSTILE[:60] not in _instructions(calls)
+
+
+def test_serialized_state_never_carries_the_signatures_marker_label():
+    """A caller still sending the old `magic` field gets it dropped: the label names
+    the format ("04 08 (Ruby Marshal)"), and Jev would only read it back."""
+    calls = []
+    with patch("jev_client.system_one", _serialized_fake(calls=calls)):
+        _run(jev_hooks.serialized_classify(KEY, [dict(BLOB, magic="04 08 (Ruby Marshal)")]))
+    assert "Ruby" not in str(calls[0]["state"]) and "magic" not in calls[0]["state"]["blob"]
+
+
+@pytest.mark.parametrize("transport,sends", [
+    ("param", "client sends to the server"), ("cookie", "sends back on later requests"),
+    ("header", "does not normally send back"), ("", "unknown")])
+def test_serialized_state_says_where_the_blob_was_seen(transport, sends):
+    calls = []
+    with patch("jev_client.system_one", _serialized_fake(calls=calls)):
+        _run(jev_hooks.serialized_classify(KEY, [dict(BLOB, transport=transport)]))
+    assert sends in calls[0]["state"]["blob"]["observed_in"]
 
 
 def test_serialized_formats_carry_none_and_no_duplicates():
@@ -419,8 +439,7 @@ def test_serialized_state_wraps_every_target_string_and_keeps_closed_values_plai
     with patch("jev_client.system_one", _serialized_fake(calls=calls)):
         _run(jev_hooks.serialized_classify(KEY, [BLOB]))
     item = calls[0]["state"]["blob"]
-    for field, label in [("location", "TARGET_PARAM"), ("magic", "TARGET_MARKER"),
-                         ("snippet", "TARGET_BLOB")]:
+    for field, label in [("location", "TARGET_PARAM"), ("snippet", "TARGET_BLOB")]:
         assert item[field].startswith(f"<<<UNTRUSTED_{label} id="), field
     assert item["transport"] == "cookie"
     assert item["encoding_layers"] == ["base64"]

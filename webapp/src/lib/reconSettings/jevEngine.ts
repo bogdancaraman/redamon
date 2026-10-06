@@ -19,6 +19,16 @@ export const JEV_ENGINE_FIELDS = [
 
 export type JevEngineField = typeof JEV_ENGINE_FIELDS[number]
 
+/**
+ * A Prisma `select` for every field above. A writer that judges a switch-on
+ * against the stored row must read all of them: a field it leaves out reads as
+ * undefined, so a stored true counts as a switch-on and every save is refused once
+ * the owner has no token.
+ */
+export const JEV_ENGINE_SELECT = Object.fromEntries(
+  JEV_ENGINE_FIELDS.map(k => [k, true]),
+) as { [K in JevEngineField]: true }
+
 export const JEV_HOOK_LABEL: Record<JevEngineField, string> = {
   ffufAiUseJev: 'FFuf extensions',
   nucleiTagsAiUseJev: 'Nuclei tag selection',
@@ -28,7 +38,7 @@ export const JEV_HOOK_LABEL: Record<JevEngineField, string> = {
   httpxJevPageType: 'page-type labels',
   resourceEnumJevToolHealth: 'silent tool-failure check',
   hakrawlerJevSeedOrder: 'Hakrawler seed order',
-  serializedScanJevRank: 'serialized-scan ranking',
+  serializedScanJevRank: 'serialized-object ranking',
 }
 
 export const JEV_VERIFY_FAILED = "Couldn't verify your Jev token, try again."

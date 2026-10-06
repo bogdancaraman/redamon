@@ -109,6 +109,15 @@ def test_recon_clips_every_blob_field_within_the_request_model_bounds():
         return next(m.max_length for m in fields[name].metadata if hasattr(m, "max_length"))
 
     assert _recon_constant("serialized_assess", "SNIPPET_CHARS") <= limit("snippet")
-    assert _recon_constant("serialized_assess", "_MAGIC_CHARS") <= limit("magic")
     assert _recon_constant("serialized_assess", "_LOCATION_CHARS") <= limit("location")
     assert _recon_constant("serialized_assess", "_MAX_LAYERS") <= limit("encoding_layers")
+
+
+def test_a_serialized_blob_carries_evidence_only():
+    """No field for the format the signatures matched or their marker label for it
+    ("04 08 (Ruby Marshal)" names its family): either one would let Jev read the
+    verdict back, and the agreement shadow mode records would measure nothing."""
+    import api
+    assert set(api.SerializedBlobItem.model_fields) == {"snippet", "transport", "location", "encoding_layers"}
+    assert set(jev_hooks._blob_state({"snippet": "x", "magic": "04 08 (Ruby Marshal)"})) == \
+        {"snippet", "transport", "observed_in", "location", "encoding_layers"}

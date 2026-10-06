@@ -1,7 +1,7 @@
 """Shape serialized-scan hits into ``combined_result["serialized_scan"]``.
 
-One finding per unique (endpoint, transport, location, format, magic). Each maps
-to a :Vulnerability candidate downstream (serialized_mixin.py).
+One finding per sink and format: (endpoint, transport, location, format). Each
+maps to a :Vulnerability candidate downstream (serialized_mixin.py).
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ SOURCE = "serialized_scan"
 _SNIPPET_MAX = 120
 
 
-def safe_snippet(raw) -> str:
-    """Printable-ASCII, hex-escaped, <=120 chars. Never raw decoded bytes."""
+def safe_snippet(raw, limit: int = _SNIPPET_MAX) -> str:
+    """Printable-ASCII, hex-escaped, <= `limit` chars. Never raw decoded bytes."""
     if raw is None:
         return ""
     text = raw if isinstance(raw, str) else str(raw)
@@ -28,9 +28,9 @@ def safe_snippet(raw) -> str:
             out.append("\\\\")
         else:
             out.append(f"\\x{o & 0xFF:02x}")
-        if len(out) >= _SNIPPET_MAX:
+        if len(out) >= limit:
             break
-    return "".join(out)[:_SNIPPET_MAX]
+    return "".join(out)[:limit]
 
 
 def build_finding(
@@ -66,13 +66,17 @@ def build_finding(
 
 
 def dedup_key(finding: dict) -> tuple:
-    """Within-run uniqueness: one candidate per locator+signature."""
+    """Within-run uniqueness: one candidate per sink and format.
+
+    The matched marker (deser_magic) is evidence, not identity: one sink seen as
+    base64 in one sample and gzip in another, or as a PHP object one run and an
+    array the next, is still one sink.
+    """
     return (
         finding.get("endpoint_url", ""),
         finding.get("deser_transport", ""),
         finding.get("deser_location", ""),
         finding.get("deser_format", ""),
-        finding.get("deser_magic", ""),
     )
 
 

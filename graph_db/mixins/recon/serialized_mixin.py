@@ -69,7 +69,7 @@ class SerializedScanMixin:
                         continue
 
                     vuln_id = _vuln_id(user_id, project_id, baseurl, path, location,
-                                       deser_format, magic, transport)
+                                       deser_format, transport)
                     host = urlparse(endpoint_url).hostname or ""
                     language = finding.get("deser_language") or ""
 
@@ -141,14 +141,16 @@ class SerializedScanMixin:
 
 
 def _vuln_id(user_id: str, project_id: str, baseurl: str, path: str,
-             location: str, deser_format: str, magic: str, transport: str = "") -> str:
-    """Tenant-scoped deterministic id (the graph-db-writes MERGE key).
+             location: str, deser_format: str, transport: str = "") -> str:
+    """Tenant-scoped deterministic id (the graph-db-writes MERGE key): one node per
+    sink and format, the scanner's dedup key.
 
-    `transport` is part of the key so two candidates that the scanner keeps as
-    distinct (same endpoint/location/format/magic but a different transport, e.g.
-    a param and a cookie sharing a name) never collapse onto one node.
+    `transport` is in it so a param and a cookie sharing a name stay two nodes.
+    The matched marker (deser_magic) is not: it is evidence, and it changes with
+    the sample (a PHP object one run, an array the next), which would prune the
+    node and recreate it, losing its triage state.
     """
-    raw = f"serialized_{user_id}_{project_id}_{baseurl}_{path}_{location}_{deser_format}_{magic}_{transport}"
+    raw = f"serialized_{user_id}_{project_id}_{baseurl}_{path}_{location}_{deser_format}_{transport}"
     return "serialized_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
 
 

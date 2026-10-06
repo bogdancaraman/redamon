@@ -99,8 +99,7 @@ async def test_crawl_seed_order_live_scores_every_host():
 async def test_serialized_classify_live_answers_from_the_closed_set():
     """The only check that TypeSafe accepts the 14-option format choice as built."""
     blob = {"snippet": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcAUH2sHDFmDRAwACRgAKbG9hZEZhY3Rvcg",
-            "magic": "rO0AB", "transport": "cookie", "location": "rememberMe",
-            "encoding_layers": ["base64"]}
+            "transport": "cookie", "location": "rememberMe", "encoding_layers": ["base64"]}
     out = await jev_hooks.serialized_classify(KEY, [blob])
     (label,) = out["labels"]
     assert label["format"] in set(jev_hooks.SERIALIZED_FORMATS)

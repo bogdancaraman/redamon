@@ -102,14 +102,25 @@ describe('preflight_scope_check: the effective engine of each AI hook', () => {
     }
   })
 
-  test('the serialized-scan ranking reports Jev with a token and its fallback without one', async () => {
-    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, serializedScanJevRank: true }))
+  test('the serialized-object ranking reports Jev with a token and its fallback without one', async () => {
+    h.findProject.mockResolvedValue(projectRow({
+      aiInPipeline: true, serializedScanEnabled: true, serializedScanJevRank: true }))
     h.tokenCount.mockResolvedValue(1)
     expect(byHook(await preflightScopeCheck(ctx(), 'p1')).serialized_assess)
       .toEqual({ hook: 'serialized_assess', kind: 'enable', engine: 'jev', effective: 'jev' })
     h.tokenCount.mockResolvedValue(0)
     expect(byHook(await preflightScopeCheck(ctx(), 'p1')).serialized_assess.effective)
       .toBe('jev → static fallback (no Jev token on the owner\'s account)')
+  })
+
+  test('the serialized-object ranking is off while its scan is off, whatever its switch', async () => {
+    // The scan defaults off, and with it off recon never reaches the ranking.
+    h.tokenCount.mockResolvedValue(1)
+    h.findProject.mockResolvedValue(projectRow({
+      aiInPipeline: true, serializedScanEnabled: false, serializedScanJevRank: true }))
+    expect(byHook(await preflightScopeCheck(ctx(), 'p1')).serialized_assess)
+      .toEqual({ hook: 'serialized_assess', kind: 'enable', engine: 'jev',
+                 effective: 'off (serializedScanEnabled is false)' })
   })
 
   test('a Jev-only hook switched on runs on Jev with a token, or its fallback without one', async () => {

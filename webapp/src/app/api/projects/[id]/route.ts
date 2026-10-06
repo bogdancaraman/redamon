@@ -19,7 +19,7 @@ import { canonicalJson } from '@/lib/fingerprint'
 import { field, fieldsWhere } from '@/lib/reconSettings/registry'
 import { STALE_SAVE_MESSAGE } from '@/lib/projectVersion'
 import { validateCrossFieldRules, writeFireteamAudit } from '@/lib/reconSettings/crossField'
-import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
+import { JEV_ENGINE_SELECT, validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { seedProjectDomains } from '@/lib/graphSeedDomains'
 
 // Path to output directories (fallback for local deletion)
@@ -263,7 +263,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       select: {
         domainBatchMode: true, domainBatchGroups: true,
         userId: true, targetGuardrailEnabled: true,
-        ffufAiUseJev: true, nucleiTagsAiUseJev: true, wafAiUseJev: true, takeoverAiUseJev: true,
+        ...JEV_ENGINE_SELECT,
       },
     })
     const willBeBatch = 'domainBatchMode' in updateData

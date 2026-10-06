@@ -13,11 +13,14 @@ curl -sD - -o /dev/null http://172.25.0.92/java/native   # see the serialized Co
 ## What it exercises
 
 Recon's `serialized_scan` is **passive and in-memory**: it only sees the slice
-the pipeline already holds -- httpx **response headers + Set-Cookie** and
-resource_enum **params**. So every endpoint here emits one serialization family
-signature on the **response side** (Content-Type, Set-Cookie, or a custom
-response header), which is exactly what the scanner can match without
-deserializing anything.
+the pipeline already holds -- httpx **response headers + Set-Cookie** for the URLs
+httpx probed, and resource_enum **params** and crawled **form fields**. Every
+endpoint here emits one serialization family signature on the **response side**
+(Content-Type, Set-Cookie, or a custom response header), in a form, or in a
+crawlable link's query, all of which the scanner matches without deserializing
+anything. A default live run probes only the root URL, so a deeper endpoint's
+response headers reach the scanner only when that path is probed (`httpxPaths`);
+otherwise they are the agent's to find in captured traffic.
 
 All 13 families (`native_java, hessian, jackson_json, fastjson, xmldecoder,
 xstream, snakeyaml, php_serialize, phar, python_pickle, dotnet_binaryformatter,
@@ -28,7 +31,7 @@ viewstate, ruby_marshal`) plus decode-and-recurse layers (`base64(gzip)`,
 
 The blobs are **inert detection fixtures** -- byte prefixes and structural
 markers only, no gadget, no class graph, no code execution. `validate_jev_e2e.py`
-(below) proves each one is flagged by a live recon run.
+(below) checks that a default live recon run flags every family it can see.
 
 ## End-to-end case test (with the Jev ranking)
 
@@ -42,10 +45,10 @@ python3 validate_jev_e2e.py setup               # project + Jev toggles + start_
 python3 validate_jev_e2e.py verify <projectId>  # once the recon has finished
 ```
 
-`setup` checks that `describe_recon_settings` lists `serializedScanJevRank`, that a
-fresh project stores it false, that `update_recon_settings` switches it on and off
-with `preflight_scope_check` following (`serialized_assess`: off, jev, off), then
-creates an internal IP-mode project on this lab and starts the recon. `verify` checks
+`setup` checks that `describe_recon_settings` lists `serializedScanJevRank`, creates
+an internal IP-mode project on this lab, checks that it stores the flag false and
+that `update_recon_settings` switches it on and off with `preflight_scope_check`
+following (`serialized_assess`: off, jev, off), then starts the recon. `verify` checks
 that every family in `live_in_memory_formats` is a `serialized_scan` candidate in the
 graph (the others ride only in a deeper endpoint's response header or `Set-Cookie`,
 which the in-memory corpus never holds, so they are reported as a known gap; see

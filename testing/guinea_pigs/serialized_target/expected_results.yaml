@@ -1,7 +1,10 @@
 # Expected recon serialized_scan results for the serialized_target guinea pig.
 # One row per serialization family the module (recon/serialized_scan/signatures.py)
-# must flag. Validated end to end by validate_jev_e2e.py: a live recon run against
-# 172.25.0.92, driven through MCP, that also checks the Jev ranking hook.
+# must flag once the response carrying it is in its corpus. A default live run
+# probes only the root URL, so validate_jev_e2e.py (a live run against 172.25.0.92,
+# driven through MCP, that also checks the Jev ranking hook) asserts the families in
+# live_in_memory_formats below; the endpoint matrix holds for a run that probes those
+# paths (httpxPaths) and for the agent's captured traffic.
 #
 # Each live hit becomes a :Vulnerability candidate with:
 #   source=serialized_scan, vulnerability_type=insecure_deserialization,

@@ -70,12 +70,17 @@ def _host_excluded(url: str, roe_excluded: list) -> bool:
 def _scan_value(value, transport: str, location: str, ctx: dict, sink) -> None:
     """Decode-and-recurse one value, emitting one finding per format it carries.
 
-    A value often matches one family twice: base64 Java shows ``rO0AB`` on its
-    surface and ``AC ED 00 05`` once decoded. That is one sink, so it is one
+    A value often matches one family more than once: base64 Java shows ``rO0AB``
+    on its surface and ``AC ED 00 05`` once decoded. That is one sink, so it is one
     candidate; two would leave a twin pending after the agent confirms the other.
-    The hit kept is the one under the longest decode chain, which tells the agent
-    how to re-encode a payload (a whole Set-Cookie header decodes to nothing, the
-    cookie value inside it does), and the first one on a tie.
+
+    The hit kept is a byte signature (the decoded header itself) over a text
+    marker; among byte hits the one reached through more decoding (url+base64 over
+    a base64 fragment of it), among text hits the one reached through less (a
+    marker readable in the raw value needs none); then the first. Its
+    encoding_layers are the layers peeled to reach that hit, which the agent
+    re-applies to a payload, so an unrelated %XX elsewhere in a header never
+    decides them.
     """
     if not isinstance(value, str) or not value:
         return
@@ -83,14 +88,15 @@ def _scan_value(value, transport: str, location: str, ctx: dict, sink) -> None:
     for token in _candidate_tokens(value):
         decoded = decoders.decode_layers(token)
         chain = list(decoded["encoding_chain"])
-        if decoded["truncated"]:
-            chain.append("truncated")
-        for layer in decoded["layers"]:
-            for hit in signatures.scan_text(layer["text"]) + signatures.scan_bytes(layer["raw"]):
+        flag = ["truncated"] if decoded["truncated"] else []
+        for depth, layer in enumerate(decoded["layers"]):
+            ranked = ([(hit, (1, depth)) for hit in signatures.scan_bytes(layer["raw"])]
+                      + [(hit, (0, -depth)) for hit in signatures.scan_text(layer["text"])])
+            for hit, rank in ranked:
                 kept = best.get(hit["format"])
-                if kept is None or len(chain) > len(kept[1]):
-                    best[hit["format"]] = (hit, chain)
-    for hit, chain in best.values():
+                if kept is None or rank > kept[2]:
+                    best[hit["format"]] = (hit, chain[:depth] + flag, rank)
+    for hit, layers, _ in best.values():
         sink(normalizers.build_finding(
             endpoint_url=ctx["endpoint_url"],
             http_method=ctx["http_method"],
@@ -99,12 +105,43 @@ def _scan_value(value, transport: str, location: str, ctx: dict, sink) -> None:
             transport=transport,
             location=location,
             hit=hit,
-            encoding_layers=chain,
+            encoding_layers=layers,
         ))
 
 
+#: Set-Cookie attribute names, never a cookie's own.
+_COOKIE_ATTRIBUTES = frozenset({
+    "path", "domain", "expires", "max-age", "secure", "httponly", "samesite",
+    "priority", "partitioned",
+})
+
+
+def _header_location(name) -> str:
+    """One spelling per header. httpx keys headers lowercase_underscored
+    (content_type), a raw header string keeps their case (Content-Type), and the
+    probe's own content_type field names the same header again: three spellings
+    of one sink would be three candidates."""
+    return str(name).strip().lower().replace("_", "-")
+
+
+def _cookie_pairs(header_value: str):
+    """(name, value) of every cookie a Set-Cookie value sets. `;` separates a
+    cookie from its attributes, and `,` or a newline separates the Set-Cookie
+    lines httpx joined into one value; an Expires date's comma leaves a fragment
+    with no `=`, which is skipped."""
+    for part in re.split(r"[;,\n]", header_value):
+        name, sep, value = part.partition("=")
+        name = name.strip()
+        if sep and name and name.lower() not in _COOKIE_ATTRIBUTES:
+            yield name, value.strip()
+
+
 def _scan_http_probe(combined_result: dict, roe_excluded: list, sink) -> None:
-    """Response headers + Set-Cookie carry serialized blobs on the response side."""
+    """Response headers + Set-Cookie carry serialized blobs on the response side.
+
+    A cookie's candidate is located at the cookie's own name, the one the agent
+    tampers with, rather than at the Set-Cookie header that carried it.
+    """
     by_url = (combined_result.get("http_probe") or {}).get("by_url") or {}
     for url, entry in by_url.items():
         if not isinstance(entry, dict):
@@ -124,7 +161,7 @@ def _scan_http_probe(combined_result: dict, roe_excluded: list, sink) -> None:
             for hit in signatures.scan_header_value(content_type):
                 sink(normalizers.build_finding(
                     endpoint_url=url, http_method="GET", baseurl=ctx["baseurl"],
-                    path=ctx["path"], transport="header", location="Content-Type",
+                    path=ctx["path"], transport="header", location=_header_location("Content-Type"),
                     hit=hit, encoding_layers=[]))
 
         headers = entry.get("headers")
@@ -132,11 +169,12 @@ def _scan_http_probe(combined_result: dict, roe_excluded: list, sink) -> None:
             # httpx sometimes stores response headers as one CRLF-joined string
             # (http_probe normalises both forms). Parse it back into name/value
             # pairs so Set-Cookie and serialization content types are not missed.
+            # A repeated header (one Set-Cookie line per cookie) keeps every value.
             parsed: dict = {}
             for line in headers.split("\n"):
                 if ":" in line:
                     k, v = line.split(":", 1)
-                    parsed.setdefault(k.strip(), v.strip())
+                    parsed.setdefault(k.strip(), []).append(v.strip())
             headers = parsed
         if isinstance(headers, dict):
             for name, raw_val in headers.items():
@@ -145,14 +183,23 @@ def _scan_http_probe(combined_result: dict, roe_excluded: list, sink) -> None:
                 for val in values:
                     if not isinstance(val, str):
                         continue
+                    location = _header_location(name)
                     for hit in signatures.scan_header_value(val):
                         sink(normalizers.build_finding(
                             endpoint_url=url, http_method="GET",
                             baseurl=ctx["baseurl"], path=ctx["path"],
-                            transport="header", location=str(name), hit=hit,
+                            transport="header", location=location, hit=hit,
                             encoding_layers=[]))
-                    transport = "cookie" if "cookie" in str(name).lower() else "header"
-                    _scan_value(val, transport, str(name), ctx, sink)
+                    if "cookie" not in location:
+                        _scan_value(val, "header", location, ctx, sink)
+                        continue
+                    pairs = list(_cookie_pairs(val))
+                    for cookie, cookie_value in pairs:
+                        # The name too: a cookie NAMED like a sink is a signal.
+                        _scan_value(cookie, "cookie", cookie, ctx, sink)
+                        _scan_value(cookie_value, "cookie", cookie, ctx, sink)
+                    if not pairs:
+                        _scan_value(val, "cookie", location, ctx, sink)
 
 
 def _scan_resource_enum(combined_result: dict, roe_excluded: list, sink) -> None:
@@ -198,8 +245,13 @@ def _scan_forms(combined_result: dict, roe_excluded: list, sink) -> None:
             continue
         found_at = form.get("found_at") if isinstance(form.get("found_at"), str) else ""
         action = form.get("action") if isinstance(form.get("action"), str) else ""
-        target = urljoin(found_at, action) if found_at else action
-        parsed = urlparse(target)
+        try:
+            target = urljoin(found_at, action) if found_at else action
+            parsed = urlparse(target)
+        except ValueError:
+            # A malformed host (`https://[x]/`) costs this form, not the run's
+            # other candidates.
+            continue
         if not parsed.scheme or not parsed.netloc or _host_excluded(target, roe_excluded):
             continue
         ctx = {
@@ -308,15 +360,21 @@ def run_serialized_scan(combined_result: dict, settings: dict) -> dict:
         _scan_resource_enum(combined_result, roe_excluded, sink)
         _scan_forms(combined_result, roe_excluded, sink)
     except Exception as e:  # noqa: BLE001 - never-raise contract (plan §5.2)
-        print(f"[!][SerializedScan] Error: {e}")
+        # Empty, not partial: a partial result would let the run prune the
+        # candidates the failed part never re-checked. The type only: a message
+        # can quote target text, and the drawer reads phases out of stdout.
+        print(f"[!][SerializedScan] Error ({type(e).__name__}) - no candidates this run")
         combined_result["serialized_scan"] = normalizers.build_result([])
         return combined_result
 
     # Optional Jev assessment (AI in pipeline). Hooked here, in the entry the full
     # pipeline and partial recon share, so both inherit it. Annotates and ranks
-    # only, never raises, never drops a candidate.
-    from recon.helpers.ai_planner import serialized_assess
-    serialized_assess.run_for_scan(findings, settings, combined_result)
+    # only, and an import or wiring failure never costs the scan its candidates.
+    try:
+        from recon.helpers.ai_planner import serialized_assess
+        serialized_assess.run_for_scan(findings, settings, combined_result)
+    except Exception as e:  # noqa: BLE001
+        print(f"[!][SerializedScan] Jev assessment skipped ({type(e).__name__})")
 
     combined_result["serialized_scan"] = normalizers.build_result(findings)
     if findings:
