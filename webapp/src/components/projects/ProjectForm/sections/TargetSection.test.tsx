@@ -202,13 +202,15 @@ describe('the wildcard Root control', () => {
 
 describe('the AI in Pipeline panel', () => {
   const HOOKS = ['ffufAiExtensions', 'nucleiAiTags', 'wafAiClassifier', 'nucleiAiResponseFilter', 'takeoverAiClassifier']
-  const JEV_ONLY = ['httpxJevPageType', 'ffufJevBasePaths', 'hakrawlerJevSeedOrder', 'resourceEnumJevToolHealth']
+  const JEV_ONLY = ['httpxJevPageType', 'ffufJevBasePaths', 'hakrawlerJevSeedOrder', 'resourceEnumJevToolHealth',
+    'serializedScanJevRank']
   const AI_ON: Data = {
     domainBatchMode: false, aiInPipeline: true,
     ffufAiExtensions: true, nucleiAiTags: false, wafAiClassifier: true, nucleiAiResponseFilter: true,
     takeoverAiClassifier: true,
     ffufAiUseJev: false, nucleiTagsAiUseJev: false, wafAiUseJev: true, takeoverAiUseJev: false,
     ffufJevBasePaths: false, httpxJevPageType: true, resourceEnumJevToolHealth: false, hakrawlerJevSeedOrder: false,
+    serializedScanJevRank: false,
   }
 
   beforeEach(() => {
@@ -327,7 +329,8 @@ describe('target modes: AI in Pipeline everywhere, Domain Verification never on 
   test.each(MODES)('%s: the master switch and, once on, every hook card render', (_mode, modeData) => {
     renderSection({ ...modeData, aiInPipeline: true })
     expect(screen.getByText('Enable AI in Pipeline')).toBeInTheDocument()
-    for (const field of [...CASCADED, 'httpxJevPageType', 'ffufJevBasePaths', 'hakrawlerJevSeedOrder', 'resourceEnumJevToolHealth']) {
+    for (const field of [...CASCADED, 'httpxJevPageType', 'ffufJevBasePaths', 'hakrawlerJevSeedOrder', 'resourceEnumJevToolHealth',
+      'serializedScanJevRank']) {
       expect(screen.getByTestId(`ai-hook-${field}`)).toBeInTheDocument()
     }
   })

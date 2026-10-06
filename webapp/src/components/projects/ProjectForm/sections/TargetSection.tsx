@@ -807,6 +807,7 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                   // aiInPipeline does not set or reset them.
                   const jevOnlyHooks: Array<{
                     field: 'ffufJevBasePaths' | 'httpxJevPageType' | 'resourceEnumJevToolHealth' | 'hakrawlerJevSeedOrder'
+                      | 'serializedScanJevRank'
                     label: string
                     summary: string
                     description: string
@@ -834,6 +835,12 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                       label: 'Resource Enum: Read Tool Errors with Jev',
                       summary: 'Asks whether an empty result with odd error output was a transient failure.',
                       description: 'Every empty result from a crawler or collector is classified from its exit code and error output, and one that looks like a failure is recorded as a coverage gap, with or without this switch. When the error output fits neither a routine line nor a known failure, Jev is asked whether it describes a transient failure a second run could fix. At most 20 questions per run, header values redacted. The verdict is kept in the recon output next to the coverage gap; no tool is re-run. Same switch as in the Resource Enum AI module.',
+                    },
+                    {
+                      field: 'serializedScanJevRank',
+                      label: 'Serialized Objects: Rank Candidates with Jev',
+                      summary: 'Asks which format each flagged blob is and how likely it is to be a reachable sink.',
+                      description: 'When the Serialized Object Scan flags candidates, Jev is asked, per distinct blob, which serialization format it is (one of the scanner\'s 13, or none) and whether it is likely to be an attacker-reachable deserialization sink. Jev is not told which format the signatures matched, so its answer is a second opinion. It never drops a candidate and never changes the matched format. Ships in shadow: the answers are kept in the recon output and shown in the recon drawer, and the candidates stay as the signatures produced them. Needs the Serialized Object Scan on. At most 200 distinct blobs per scan, within 60 seconds. Same switch as in the Serialized Object Scan module.',
                     },
                   ]
                   return (

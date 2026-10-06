@@ -4,8 +4,9 @@ import { join } from 'node:path'
 import { mintToken, signIn } from './auth'
 
 /**
- * Regenerates the two screenshots on the wiki's TypeSafe Jev page. Not an
- * assertion suite: run it when the AI in Pipeline panel or the Jev token card
+ * Regenerates the Jev screenshots on the wiki (the AI in Pipeline panel with its
+ * complete hook list, the Jev token card, and the Serialized Object Scan card
+ * with its Jev ranking control). Not an assertion suite: run it when one of them
  * changes so the docs stop drifting from the product.
  *
  *   npx playwright test tests/captureJevDocsShots.spec.ts
@@ -80,11 +81,17 @@ test('AI in Pipeline panel', async ({ page }) => {
   }
   await expect(list).toBeVisible({ timeout: 15_000 })
   await expect(page.getByTestId('ai-hook-httpxJevPageType')).toBeAttached()
+  await expect(page.getByTestId('ai-hook-serializedScanJevRank')).toBeAttached()
+  // The model picker fills from a fetch that is slow on a freshly started webapp.
+  await expect(page.getByText('Loading models...')).toHaveCount(0, { timeout: 30_000 })
 
   await page.addStyleTag({ content: NO_MOTION })
-  // The hook list scrolls inside the panel: show its end, where the four
-  // Jev-only cards are.
-  await list.evaluate(el => { el.scrollTop = el.scrollHeight })
+  // The hook list scrolls inside the panel; lift its height cap so the shot
+  // shows the complete list, every LLM hook and every Jev-only hook.
+  await list.evaluate(el => {
+    (el as HTMLElement).style.maxHeight = 'none'
+    ;(el as HTMLElement).style.overflow = 'visible'
+  })
   const panel = list.locator('xpath=ancestor::div[.//*[normalize-space(text())="Enable AI in Pipeline"]][1]')
   await panel.scrollIntoViewIfNeeded()
   await page.waitForTimeout(400)
@@ -102,4 +109,29 @@ test('TypeSafe AI (Jev) token card', async ({ page }) => {
   await section.scrollIntoViewIfNeeded()
   await page.waitForTimeout(300)
   await section.screenshot({ path: join(OUT, 'typesafe-jev-settings-section.png') })
+})
+
+test('Serialized Object Scan card', async ({ page }) => {
+  // Scan ON, the Insecure Deserialization skill OFF (the project default), so the
+  // "half a cycle" alert renders. Client-side state only: nothing is saved.
+  await page.setViewportSize({ width: 1400, height: 1400 })
+  await page.goto(`/projects/${projectId}/settings`)
+  await expect(page.getByRole('heading', { name: /Project Settings/i })).toBeVisible({ timeout: 30_000 })
+  await page.locator('[title="Tab view"]').first().click()
+  await page.getByRole('button', { name: 'JS Recon', exact: true }).first().click()
+
+  const toggle = page.getByRole('switch', { name: 'Enable Serialized Object Scan' })
+  await expect(toggle).toBeVisible({ timeout: 15_000 })
+  if ((await toggle.getAttribute('aria-checked')) !== 'true') await toggle.click()
+  // The whole card: the nearest ancestor holding both its heading and its Jev
+  // control (the header alone also holds the heading).
+  const card = toggle.locator(
+    'xpath=ancestor::div[.//h2[contains(normalize-space(.), "Serialized Object Scan")] and .//*[@role="group"]][1]')
+  await expect(card.getByRole('alert')).toBeVisible()
+  await expect(card.getByRole('group', { name: 'Jev hook' })).toBeVisible()
+
+  await page.addStyleTag({ content: NO_MOTION })
+  await card.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(300)
+  await card.screenshot({ path: join(OUT, 'serialized-object-scan-settings.png') })
 })
