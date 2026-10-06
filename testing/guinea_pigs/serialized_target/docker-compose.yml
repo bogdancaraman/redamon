@@ -19,7 +19,9 @@ services:
     container_name: redamon-serialized-target
     restart: unless-stopped
     ports:
-      - "9092:80"   # host alias for manual curl; recon uses the bridge IP:80
+      # Loopback only: this target is deliberately vulnerable, so it must not be
+      # reachable from the LAN. Recon uses the bridge IP:80, not this alias.
+      - "127.0.0.1:9092:80"   # host alias for manual curl
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 80)); s.close()\" || exit 1"]
       interval: 15s

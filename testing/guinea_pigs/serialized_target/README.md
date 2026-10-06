@@ -30,8 +30,15 @@ viewstate, ruby_marshal`) plus decode-and-recurse layers (`base64(gzip)`,
 [`payloads.py`](payloads.py) for how each blob is built.
 
 The blobs are **inert detection fixtures** -- byte prefixes and structural
-markers only, no gadget, no class graph, no code execution. `validate_jev_e2e.py`
-(below) checks that a default live recon run flags every family it can see.
+markers only, no gadget, no class graph. `validate_jev_e2e.py` (below) checks that
+a default live recon run flags every family it can see.
+
+**One real sink, on purpose.** `/python/pickle4` runs `pickle.loads` on its
+`session` *request* cookie, so the agent's `deserialization` skill has something to
+confirm: its non-destructive DNS oracle really fires (interactsh callback), and a
+corrupt blob returns `500` with an `X-Deser-Error` header (the error-differential
+channel). A cookieless request, such as recon's probe, takes the normal path and
+still gets the detection `Set-Cookie`.
 
 ## End-to-end case test (with the Jev ranking)
 
@@ -64,5 +71,6 @@ Fixed IP `172.25.0.92` on the external `redamon-network` (survives restarts;
 scan containers run `--net=host` and cannot resolve container names, so pin the
 project to the **IP**, port 80). Host alias `localhost:9092` for manual curl.
 
-> Intentionally vulnerable-looking. Local/trusted Docker host only; never expose
-> these ports to an untrusted network.
+> Intentionally vulnerable: `/python/pickle4` is real code execution. Local/trusted
+> Docker host only. The compose file binds the `9092` alias to `127.0.0.1`; never
+> publish it on another interface.

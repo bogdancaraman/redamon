@@ -5,15 +5,21 @@ the agent ``deserialization`` built-in skill. Every endpoint emits ONE family's
 serialization signature on the RESPONSE side (Content-Type, Set-Cookie, or a
 custom response header) because that is the slice the passive recon scanner can
 see in memory (http_probe response headers + resource_enum params). The blobs
-are inert detection fixtures (see payloads.py) -- no gadget, no code execution.
+are inert detection fixtures (see payloads.py) -- no gadget. ONE endpoint is a
+real sink on purpose: /python/pickle4 pickle.loads its `session` request cookie
+(_pickle_sink_response), so the agent's out-of-band oracle can confirm it.
 
-Stdlib only; runs on port 80. Not safe to expose to an untrusted network.
+Stdlib only; runs on port 80. Real code execution through that sink, so never
+expose it to an untrusted network (the compose file binds the host alias to
+loopback).
 """
 
 from __future__ import annotations
 
+import base64
 import html
 import os
+import pickle  # noqa: S403 - deliberate insecure sink for the agent-confirmation test
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -95,8 +101,47 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _pickle_sink_response(self):
+        """INTENTIONALLY VULNERABLE real sink for the agent-confirmation test.
+
+        /python/pickle4 deserializes its ``session`` request cookie with
+        pickle.loads. A cookieless request (recon's httpx probe) takes the normal
+        path and still emits the detection Set-Cookie, so recon keeps flagging the
+        candidate. A request WITH a session cookie is pickle.loads'd:
+          * the agent's non-destructive DNS oracle (__reduce__ -> gethostbyname of
+            the OAST domain) actually fires -> interactsh callback = confirmation;
+          * a corrupt/flipped blob raises -> 500 with the exception name, which is
+            the B3 error-differential channel.
+        Guinea-pig lab on an isolated Docker network only.
+        """
+        sess = None
+        for part in (self.headers.get("Cookie", "") or "").split(";"):
+            part = part.strip()
+            if part.startswith("session="):
+                sess = part[len("session="):]
+                break
+        if sess:
+            try:
+                pickle.loads(base64.b64decode(sess, validate=False))  # noqa: S301
+            except Exception as e:  # noqa: BLE001 - error differential is the point
+                body = f"<html><body>pickle.loads error: {type(e).__name__}</body></html>".encode()
+                self.send_response(500)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("X-Deser-Error", type(e).__name__)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+                return
+        return self._send(
+            b"<html><body><h2>/python/pickle4</h2><p>serialized fixture</p></body></html>",
+            _BY_PATH["/python/pickle4"],
+        )
+
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/python/pickle4":
+            return self._pickle_sink_response()
         if path in ("/", "/index.html"):
             return self._send(_landing(), [])
         if path == "/forms/aspnet":
