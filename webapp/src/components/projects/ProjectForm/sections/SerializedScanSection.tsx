@@ -30,9 +30,23 @@ export function SerializedScanSection({ data, updateField, onRun }: SerializedSc
   const d = data as unknown as {
     serializedScanEnabled?: boolean
     captureProxyEnabled?: boolean
+    attackSkillConfig?: unknown
   }
   const enabled = !!d.serializedScanEnabled
   const captureOff = !d.captureProxyEnabled
+
+  // The recon module only FLAGS candidates; the agent's built-in
+  // `deserialization` skill is what CONFIRMS and promotes them. Mirror
+  // AttackSkillsSection.isBuiltInEnabled exactly: present-and-not-false is on,
+  // and a missing key is off (the shipped default), matching the agent's
+  // get_enabled_builtin_skills. So the alert fires when the scan is on but the
+  // confirming skill is not, i.e. the detect->confirm loop is half-wired.
+  const builtIn: Record<string, unknown> =
+    d.attackSkillConfig && typeof d.attackSkillConfig === 'object'
+      && 'builtIn' in (d.attackSkillConfig as Record<string, unknown>)
+      ? ((d.attackSkillConfig as { builtIn?: Record<string, unknown> }).builtIn ?? {})
+      : {}
+  const deserSkillOn = 'deserialization' in builtIn ? builtIn.deserialization !== false : false
 
   return (
     <div className={`${styles.section} ${styles.formSkin}`}>
@@ -75,6 +89,16 @@ export function SerializedScanSection({ data, updateField, onRun }: SerializedSc
             an info-severity candidate the agent&apos;s deserialization skill confirms with a non-destructive
             out-of-band oracle.
           </p>
+
+          {enabled && !deserSkillOn && (
+            <p className={`${styles.fieldHint} ${styles.fieldHintCaution}`} role="alert">
+              <strong>Half a cycle.</strong> This module only FLAGS candidates (info severity). The agent&apos;s
+              built-in <strong>Insecure Deserialization</strong> skill is what CONFIRMS them with the
+              non-destructive out-of-band oracle and promotes the real ones. It is currently OFF, so every hit will
+              sit as an unconfirmed lead. Enable it under AI Agent &gt; Attack Skills for the full detect to confirm
+              cycle.
+            </p>
+          )}
 
           {enabled && captureOff && (
             <p className={`${styles.fieldHint} ${styles.fieldHintCaution}`}>
