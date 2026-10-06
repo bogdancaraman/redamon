@@ -37,23 +37,15 @@ function CustomEdgeComponent({
   }
 
   return (
-    <g>
-      <path
-        d={edgePath}
-        fill="none"
-        stroke={stroke}
-        strokeWidth={strokeWidth}
-        opacity={opacity}
-        strokeDasharray={strokeDasharray}
-        className={animClass}
-      />
-      <path
-        d={edgePath}
-        fill="none"
-        stroke="transparent"
-        strokeWidth={20}
-      />
-    </g>
+    <path
+      d={edgePath}
+      fill="none"
+      stroke={stroke}
+      strokeWidth={strokeWidth}
+      opacity={opacity}
+      strokeDasharray={strokeDasharray}
+      className={animClass}
+    />
   )
 }
 

@@ -310,6 +310,11 @@ export function useWorkflowGraph(formData: Record<string, unknown>) {
         source: edge.source,
         target: edge.target,
         type: 'custom',
+        // Edges are decoration. A selectable edge gets a pointer cursor and
+        // React Flow's `nopan` class, so in this dense graph most of the canvas
+        // could not be dragged; with both off the mouse falls through to the pane.
+        selectable: false,
+        focusable: false,
         animated: false,
         data: { shouldAnimate: animated, isEnrich },
         style: {

@@ -32,7 +32,8 @@ export const INPUT_NODE_HEIGHT = 70
 // Spacing
 const COL_GAP = 50            // horizontal gap between tool groups
 const DATA_H_GAP = 12         // horizontal gap between data nodes in same band
-const BAND_GAP = 40           // vertical gap between center band and data bands
+const MAX_BAND_SLOTS = 2      // data nodes side by side in a tool column's band before it wraps
+const BAND_GAP = 40          // vertical gap between center band and data bands
 const DATA_V_GAP = 10         // vertical gap between stacked data nodes in same column
 const MARGIN_X = 40
 const MARGIN_Y = 20
@@ -123,6 +124,27 @@ function getDataPlacement(nodeType: string): { band: 'upper' | 'lower'; row: num
   return placements[nodeType] ?? { band: 'lower', row: 0 }
 }
 
+/**
+ * X slot of each node in a data band. Nodes take slots left to right and wrap
+ * after `maxSlots`, so a crowded band stacks on its rows instead of widening
+ * its column and pushing the tool stack away from the neighbouring columns.
+ * A wrapped node moves on to the next slot when its own row is taken there.
+ */
+function assignBandSlots(items: { row: number }[], maxSlots: number): number[] {
+  const perRow = new Map<number, number>()
+  for (const d of items) perRow.set(d.row, (perRow.get(d.row) ?? 0) + 1)
+  // Never fewer slots than the fullest row needs, or two of its nodes would overlap.
+  const slotCount = Math.max(Math.min(items.length, maxSlots), ...perRow.values())
+
+  const taken = new Set<string>()
+  return items.map((d, i) => {
+    let slot = i % slotCount
+    while (taken.has(`${slot}:${d.row}`)) slot = (slot + 1) % slotCount
+    taken.add(`${slot}:${d.row}`)
+    return slot
+  })
+}
+
 export function computeLayout(
   nodeIds: { id: string; type: 'input' | 'tool' | 'data'; group: number; width: number; height: number }[],
 ): PositionedNode[] {
@@ -144,24 +166,38 @@ export function computeLayout(
   // X position is shared across all three bands for a given group
 
   // Build group columns: for each group, collect tools and data
+  // A band's nodes with their X offsets from the band's left edge
+  type DataBand = { nodes: DataPlacement[]; offsets: number[]; width: number }
   type GroupColumn = {
     group: number
     tools: { id: string; width: number; height: number }[]
-    upperData: DataPlacement[]
-    lowerData: DataPlacement[]
+    upper: DataBand
+    lower: DataBand
+  }
+
+  function layoutBand(group: number, band: 'upper' | 'lower'): DataBand {
+    const nodes = dataNodes.filter(d => d.group === group && d.band === band)
+    if (nodes.length === 0) return { nodes, offsets: [], width: 0 }
+    // The input column never wraps: its seed nodes feed most tools, and giving
+    // each its own X keeps the vertical runs of those edges from overlapping.
+    const slots = assignBandSlots(nodes, group === 0 ? nodes.length : MAX_BAND_SLOTS)
+    const pitch = Math.max(...nodes.map(d => d.width)) + DATA_H_GAP
+    return {
+      nodes,
+      offsets: slots.map(slot => slot * pitch),
+      width: (Math.max(...slots) + 1) * pitch - DATA_H_GAP,
+    }
   }
 
   const groupColumns: GroupColumn[] = []
 
   // Group 0: Input + universal data
   const inputNode = nodeIds.find(n => n.type === 'input')
-  const universalUpper = dataNodes.filter(d => d.group === 0 && d.band === 'upper')
-  const universalLower = dataNodes.filter(d => d.group === 0 && d.band === 'lower')
   groupColumns.push({
     group: 0,
     tools: inputNode ? [{ id: inputNode.id, width: inputNode.width, height: inputNode.height }] : [],
-    upperData: universalUpper,
-    lowerData: universalLower,
+    upper: layoutBand(0, 'upper'),
+    lower: layoutBand(0, 'lower'),
   })
 
   // Tool groups
@@ -169,22 +205,13 @@ export function computeLayout(
     const tools = nodeIds
       .filter(n => n.type === 'tool' && n.group === group)
       .map(n => ({ id: n.id, width: n.width, height: n.height }))
-    const upper = dataNodes.filter(d => d.group === group && d.band === 'upper')
-    const lower = dataNodes.filter(d => d.group === group && d.band === 'lower')
-    groupColumns.push({ group, tools, upperData: upper, lowerData: lower })
+    groupColumns.push({ group, tools, upper: layoutBand(group, 'upper'), lower: layoutBand(group, 'lower') })
   }
 
-  // Compute width of each column (widest of: tools width, upper data spread, lower data spread)
-  function bandWidth(items: { width: number }[]): number {
-    if (items.length === 0) return 0
-    return items.reduce((sum, d) => sum + d.width + DATA_H_GAP, -DATA_H_GAP)
-  }
-
+  // Compute width of each column (widest of: tools width, upper data band, lower data band)
   const colWidths: number[] = groupColumns.map(col => {
     const toolW = col.tools.length > 0 ? Math.max(...col.tools.map(t => t.width)) : 0
-    const upperW = bandWidth(col.upperData)
-    const lowerW = bandWidth(col.lowerData)
-    return Math.max(toolW, upperW, lowerW)
+    return Math.max(toolW, col.upper.width, col.lower.width)
   })
 
   // Assign X start for each column
@@ -245,30 +272,22 @@ export function computeLayout(
       toolY += tool.height + DATA_V_GAP
     }
 
-    // Upper data nodes: spread horizontally, placed at their assigned row
+    // Upper data nodes: band centered in the column, each node at its assigned row
     // Row 0 is closest to tools, higher rows are farther up
-    if (col.upperData.length > 0) {
-      const totalW = bandWidth(col.upperData)
-      let dataX = x + (w - totalW) / 2
-      for (const d of col.upperData) {
-        // Higher row number = farther from tools = lower Y value (closer to top)
-        const y = upperBandY + (maxUpperRow - d.row) * DATA_ROW_OFFSET
-        positions.push({ id: d.id, x: dataX, y })
-        dataX += d.width + DATA_H_GAP
-      }
-    }
+    const upperX = x + (w - col.upper.width) / 2
+    col.upper.nodes.forEach((d, j) => {
+      // Higher row number = farther from tools = lower Y value (closer to top)
+      const y = upperBandY + (maxUpperRow - d.row) * DATA_ROW_OFFSET
+      positions.push({ id: d.id, x: upperX + col.upper.offsets[j], y })
+    })
 
-    // Lower data nodes: spread horizontally, placed at their assigned row
+    // Lower data nodes: band centered in the column, each node at its assigned row
     // Row 0 is closest to tools, higher rows are farther down
-    if (col.lowerData.length > 0) {
-      const totalW = bandWidth(col.lowerData)
-      let dataX = x + (w - totalW) / 2
-      for (const d of col.lowerData) {
-        const y = lowerBandY + d.row * DATA_ROW_OFFSET
-        positions.push({ id: d.id, x: dataX, y })
-        dataX += d.width + DATA_H_GAP
-      }
-    }
+    const lowerX = x + (w - col.lower.width) / 2
+    col.lower.nodes.forEach((d, j) => {
+      const y = lowerBandY + d.row * DATA_ROW_OFFSET
+      positions.push({ id: d.id, x: lowerX + col.lower.offsets[j], y })
+    })
   }
 
   return positions

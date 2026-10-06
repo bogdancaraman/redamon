@@ -5,6 +5,7 @@
  */
 
 import { describe, test, expect } from 'vitest'
+import { renderHook } from '@testing-library/react'
 import {
   WORKFLOW_TOOLS,
   UNIVERSAL_DATA_NODES,
@@ -28,6 +29,7 @@ import {
   INPUT_NODE_WIDTH,
   INPUT_NODE_HEIGHT,
 } from './workflowLayout'
+import { useWorkflowGraph } from './useWorkflowGraph'
 
 
 // ---------------------------------------------------------------------------
@@ -317,6 +319,27 @@ describe('workflowLayout / computeLayout', () => {
     }
   })
 
+  test('a crowded data band does not push its tool column away from its neighbours', () => {
+    const { nodes } = buildLayoutNodes()
+    const positions = computeLayout(nodes)
+    const posMap = new Map(positions.map(p => [p.id, p]))
+
+    // One X per tool group, in pipeline order
+    const groupXs = [...new Set(WORKFLOW_TOOLS.map(t => t.group))]
+      .sort((a, b) => a - b)
+      .map(group => ({ group, x: posMap.get(`tool-${WORKFLOW_TOOLS.find(t => t.group === group)!.id}`)!.x }))
+
+    // A band that wraps keeps every column within a data node of the previous
+    // one; a band laid out in a single line (six nodes under JS Recon) does not.
+    for (let i = 1; i < groupXs.length; i++) {
+      const gap = groupXs[i].x - (groupXs[i - 1].x + TOOL_NODE_WIDTH)
+      expect(
+        gap,
+        `Gap between group ${groupXs[i - 1].group} and group ${groupXs[i].group} is ${gap}px`,
+      ).toBeLessThan(DATA_NODE_WIDTH)
+    }
+  })
+
   test('no two nodes overlap (same position with same dimensions)', () => {
     const { nodes } = buildLayoutNodes()
     const positions = computeLayout(nodes)
@@ -591,5 +614,26 @@ describe('workflow graph logic', () => {
       const groups = new Set(consumers.map(t => t.group))
       expect(groups.size, 'Domain should be consumed by tools in multiple groups').toBeGreaterThanOrEqual(3)
     })
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// useWorkflowGraph edges
+// ---------------------------------------------------------------------------
+
+describe('useWorkflowGraph edges', () => {
+  test('every edge is inert so the canvas can be dragged from anywhere', () => {
+    const formData = Object.fromEntries(WORKFLOW_TOOLS.map(t => [t.enabledField, true]))
+    const { result } = renderHook(() => useWorkflowGraph(formData))
+
+    expect(result.current.edges.length).toBeGreaterThan(0)
+    // React Flow puts `nopan` and a pointer cursor on a selectable edge, and a
+    // tab stop on a focusable one. Both must be off explicitly: undefined
+    // falls back to the selectable/focusable defaults.
+    for (const edge of result.current.edges) {
+      expect(edge.selectable, `${edge.id} is selectable`).toBe(false)
+      expect(edge.focusable, `${edge.id} is focusable`).toBe(false)
+    }
   })
 })
