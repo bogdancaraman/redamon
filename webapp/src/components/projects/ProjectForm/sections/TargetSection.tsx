@@ -695,260 +695,260 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
             </>
           )}
 
-          {!ipMode && (
-            <>
-              {/* AI in Pipeline (master toggle, model picker, per-tool toggles) */}
-              <div className={styles.subSection}>
-                <div className={styles.toggleRow} style={{ gap: 'var(--space-4)', alignItems: 'center' }}>
-                  <AiToggleLabel
-                    label="Enable AI in Pipeline"
-                    tooltip={
-                      'Master switch that unlocks every per-tool AI toggle below. ' +
-                      'When OFF, all per-tool AI flags are forced OFF and disabled, ' +
-                      'no LLM calls are made by the recon pipeline. When ON, each ' +
-                      'per-tool toggle becomes editable and individual AI hooks can ' +
-                      'be turned on or off independently. Pick the model used by ' +
-                      'every hook just below.'
-                    }
-                  />
-                  <Toggle
-                    checked={data.aiInPipeline}
-                    onChange={(checked) => {
-                      updateField('aiInPipeline', checked)
-                      // When master flips, cascade to every per-tool flag so the
-                      // form state matches the backend defense-in-depth contract.
-                      updateField('ffufAiExtensions', checked)
-                      updateField('nucleiAiTags', checked)
-                      updateField('wafAiClassifier', checked)
-                      updateField('nucleiAiResponseFilter', checked)
-                      updateField('takeoverAiClassifier', checked)
-                    }}
-                  />
+          {/* AI in Pipeline renders in every target mode: IP and batch scans run the
+              same AI-hooked tools as domain scans, so it must stay outside the gate below. */}
+          <div className={styles.subSection}>
+            <div className={styles.toggleRow} style={{ gap: 'var(--space-4)', alignItems: 'center' }}>
+              <AiToggleLabel
+                label="Enable AI in Pipeline"
+                tooltip={
+                  'Master switch that unlocks every per-tool AI toggle below. ' +
+                  'When OFF, all per-tool AI flags are forced OFF and disabled, ' +
+                  'no LLM calls are made by the recon pipeline. When ON, each ' +
+                  'per-tool toggle becomes editable and individual AI hooks can ' +
+                  'be turned on or off independently. Pick the model used by ' +
+                  'every hook just below.'
+                }
+              />
+              <Toggle
+                checked={data.aiInPipeline}
+                onChange={(checked) => {
+                  updateField('aiInPipeline', checked)
+                  // When master flips, cascade to every per-tool flag so the
+                  // form state matches the backend defense-in-depth contract.
+                  updateField('ffufAiExtensions', checked)
+                  updateField('nucleiAiTags', checked)
+                  updateField('wafAiClassifier', checked)
+                  updateField('nucleiAiResponseFilter', checked)
+                  updateField('takeoverAiClassifier', checked)
+                }}
+              />
+            </div>
+            {data.aiInPipeline && (
+              <>
+                <div className={aiStyles.modelRow}>
+                  <div className={aiStyles.column}>
+                    <label className={styles.fieldLabel}>AI Model</label>
+                    <ModelPicker
+                      userId={userId}
+                      value={data.aiPipelineModel}
+                      onChange={(id) => updateField('aiPipelineModel', id)}
+                    />
+                    <span className={styles.fieldHint}>
+                      Model used by every AI hook in recon. Independent of the
+                      agent&apos;s own model selection. Pick a cheaper model here
+                      if cost matters more than peak quality. Applies to hooks on
+                      the LLM engine.
+                    </span>
+                  </div>
+                  <div className={aiStyles.column}>
+                    <span className={styles.fieldLabel}>Jev engine</span>
+                    <JevTokenPanel userId={userId} />
+                  </div>
                 </div>
-                {data.aiInPipeline && (
-                  <>
-                    <div className={aiStyles.modelRow}>
-                      <div className={aiStyles.column}>
-                        <label className={styles.fieldLabel}>AI Model</label>
-                        <ModelPicker
-                          userId={userId}
-                          value={data.aiPipelineModel}
-                          onChange={(id) => updateField('aiPipelineModel', id)}
-                        />
-                        <span className={styles.fieldHint}>
-                          Model used by every AI hook in recon. Independent of the
-                          agent&apos;s own model selection. Pick a cheaper model here
-                          if cost matters more than peak quality. Applies to hooks on
-                          the LLM engine.
-                        </span>
-                      </div>
-                      <div className={aiStyles.column}>
-                        <span className={styles.fieldLabel}>Jev engine</span>
-                        <JevTokenPanel userId={userId} />
-                      </div>
-                    </div>
 
-                    {/* Per-tool AI toggles. Each one mirrors the toggle in its tool
-                        section, sharing the same form field, so flipping either
-                        place updates both. The list lives inside a fixed-height
-                        scroll container so adding more hooks doesn't push the
-                        rest of the form down. Descriptions are rendered as
-                        native title-attribute tooltips on the info icon to
-                        keep each row compact. Add new entries to the
-                        `aiPipelineHooks` array below as more tools gain AI
-                        hooks -- no JSX changes needed. */}
-                    {(() => {
-                      const aiPipelineHooks: Array<{
-                        field: 'ffufAiExtensions' | 'nucleiAiTags' | 'wafAiClassifier' | 'nucleiAiResponseFilter' | 'takeoverAiClassifier'
-                        /** The LLM | Jev engine switch. Absent where Jev must not decide: the
-                            Nuclei false-positive filter deletes findings from target-controlled bytes. */
-                        engineField?: 'ffufAiUseJev' | 'nucleiTagsAiUseJev' | 'wafAiUseJev' | 'takeoverAiUseJev'
-                        label: string
-                        /** One line under the label; the full text stays in the info tooltip. */
-                        summary: string
-                        description: string
-                      }> = [
-                        {
-                          field: 'ffufAiExtensions',
-                          engineField: 'ffufAiUseJev',
-                          label: 'FFuf: Use AI for Extensions',
-                          summary: 'Picks file extensions per target from its response headers.',
-                          description: 'For each fuzz target, FFuf first sends a single HEAD request and asks the configured model to suggest the most likely file extensions based on the response headers (Server, X-Powered-By, X-AspNet-Version). The static FFuf extensions list in the FFuf module is ignored when this is on. Same toggle as in the FFuf module: flipping it here flips it there. A per-fingerprint cache means N hosts behind the same stack collapse to one LLM call.',
-                        },
-                        {
-                          field: 'nucleiAiTags',
-                          engineField: 'nucleiTagsAiUseJev',
-                          label: 'Nuclei: Use AI for Tag Selection',
-                          summary: 'Prunes the tag list to the detected tech stack, once per scan.',
-                          description: 'Once per scan, Nuclei aggregates the detected tech stack from http_probe (Wappalyzer + Server headers) and asks the configured model to prune its include-tags list to ones matching the stack. Drops irrelevant tags like wordpress on Node sites, adds tech-specific ones like apache or wp-plugin when detected. The static Include Tags list in the Nuclei module is ignored when this is on. Same toggle as in the Nuclei module: flipping it here flips it there. Candidate tag pool is built from the live nuclei-templates volume (count >= 50, ~125 broad-category tags).',
-                        },
-                        {
-                          field: 'wafAiClassifier',
-                          engineField: 'wafAiUseJev',
-                          label: 'Security Checks: Use AI for WAF Classification',
-                          summary: 'Scores WAF/CDN presence when the header check misses it.',
-                          description: 'Augments the static WAF/CDN header-token check used by the Direct IP and WAF Bypass checks. When the static list misses (modern WAFs strip or rebrand their headers), the response gets a second pass through the configured model, which scores WAF presence 0-100 from headers, body fingerprints, cookies, and latency. Same toggle as in the Security Checks module: flipping it here flips it there. A per-response fingerprint cache collapses identical responses to one LLM call.',
-                        },
-                        {
-                          field: 'nucleiAiResponseFilter',
-                          label: 'Nuclei: Use AI to Filter False-Positive Block Pages',
-                          summary: 'Tells a WAF block page from a real hit on suspicious findings.',
-                          description: "Augments the keyword-based WAF/rate-limit detection inside Nuclei's false-positive filter. When the static list misses (rebranded WAF blocks, AWS WAF JSON errors, custom Fortinet pages) but the response still looks like a block (suspicious status code on an injection finding), the LLM classifies the body as block-page or real hit. Suppresses fake findings and exposes real ones the keyword filter wrongly hides. Same toggle as in the Nuclei module: flipping it here flips it there. Per-response fingerprint cache keeps cost bounded.",
-                        },
-                        {
-                          field: 'takeoverAiClassifier',
-                          engineField: 'takeoverAiUseJev',
-                          label: 'Takeover: Use AI to Disambiguate WAF "No-Host" Pages',
-                          summary: 'Tells a real unclaimed-service page from a WAF block page.',
-                          description: "Subjack/Nuclei takeover fingerprints can collide with WAF block pages that say \"not found\" for a hostname the WAF doesn't recognize. When AI is on, each takeover candidate is probed; if the response carries no third-party vendor token (Heroku-Request-Id, x-amz-bucket-region, etc.), the LLM classifies the body as a real unclaimed-service page or a WAF block. AI-flagged collisions get a -40 score penalty so they land in manual_review instead of being shipped as criticals. Same toggle as in the Subdomain Takeover module: flipping it here flips it there.",
-                        },
-                      ]
-                      // Jev-only hooks: no LLM twin and no per-hook AI flag, so the card
-                      // has one Off | Jev control. Never part of the master cascade above:
-                      // aiInPipeline does not set or reset them.
-                      const jevOnlyHooks: Array<{
-                        field: 'ffufJevBasePaths' | 'httpxJevPageType' | 'resourceEnumJevToolHealth' | 'hakrawlerJevSeedOrder'
-                        label: string
-                        summary: string
-                        description: string
-                      }> = [
-                        {
-                          field: 'httpxJevPageType',
-                          label: 'HTTP Probe: Label Page Types with Jev',
-                          summary: 'Labels each probed page: app, login wall, parked, default, placeholder or error.',
-                          description: 'After httpx probes each URL, Jev labels every page with one yes/no question per class. A deterministic pre-filter (default install titles, parking CNAMEs, error statuses, login paths) supplies the label only where Jev gives no answer. An unsure answer is "app", so nothing is hidden. The label is written onto the Endpoint in the graph (page_class) and kept in the recon output; what gets scanned does not change. At most 300 distinct pages per scan, within 60 seconds. Same switch as in the httpx module.',
-                        },
-                        {
-                          field: 'ffufJevBasePaths',
-                          label: 'FFuf: Rank Smart-Fuzz Directories with Jev',
-                          summary: 'Picks which discovered directories FFuf smart-fuzzes under its cap.',
-                          description: 'When smart fuzz has more discovered base directories than its cap, Jev is asked, per directory, whether it is likely to hold sensitive, administrative or application content, and its best ones fill the cap. The same number of directories is fuzzed either way, and the random pick is the fallback when Jev is unavailable. Same switch as in the FFuf module.',
-                        },
-                        {
-                          field: 'hakrawlerJevSeedOrder',
-                          label: 'Hakrawler: Order Seeds with Jev',
-                          summary: 'Orders hosts so a capped crawl reaches the promising ones first.',
-                          description: 'Hakrawler crawls its seeds in list order and stops once its URL cap is reached, so with a tight cap hosts late in the alphabet are never crawled. Jev is asked, per probed host, whether it has a rich web application surface, and Hakrawler crawls host by host in that order (alphabetical when Jev is unavailable). Ordering only: every seed stays in the list. Partial recon keeps the alphabetical order. Same switch as in the Hakrawler module.',
-                        },
-                        {
-                          field: 'resourceEnumJevToolHealth',
-                          label: 'Resource Enum: Read Tool Errors with Jev',
-                          summary: 'Asks whether an empty result with odd error output was a transient failure.',
-                          description: 'Every empty result from a crawler or collector is classified from its exit code and error output, and one that looks like a failure is recorded as a coverage gap, with or without this switch. When the error output fits neither a routine line nor a known failure, Jev is asked whether it describes a transient failure a second run could fix. At most 20 questions per run, header values redacted. The verdict is kept in the recon output next to the coverage gap; no tool is re-run. Same switch as in the Resource Enum AI module.',
-                        },
-                      ]
-                      return (
-                        <div className={aiStyles.hookList} data-testid="ai-hook-list">
-                          {aiPipelineHooks.map((hook) => {
-                            const on = data[hook.field]
-                            return (
-                              <div
-                                key={hook.field}
-                                className={`${aiStyles.hookCard} ${on ? aiStyles.hookCardOn : ''}`}
-                                data-testid={`ai-hook-${hook.field}`}
-                              >
-                                <div className={aiStyles.hookHead}>
-                                  <div className={aiStyles.hookText}>
-                                    <AiToggleLabel label={hook.label} tooltip={hook.description} />
-                                    <span className={aiStyles.hookSummary}>{hook.summary}</span>
-                                  </div>
-                                  <Toggle
-                                    checked={on}
-                                    onChange={(checked) => updateField(hook.field, checked)}
-                                  />
-                                </div>
-                                <div className={aiStyles.hookEngine}>
-                                  <span className={aiStyles.engineLabel}>Engine</span>
-                                  {hook.engineField ? (
-                                    <JevEngineControl
-                                      value={data[hook.engineField]}
-                                      enabled={data.aiInPipeline && on}
-                                      disabledHint="Turn this hook on to choose its engine."
-                                      jevStatus={jevStatus}
-                                      onSelect={(useJev) => updateField(hook.engineField!, useJev)}
-                                    />
-                                  ) : (
-                                    <span
-                                      className={aiStyles.llmOnly}
-                                      title="This hook can drop a finding based on bytes the target controls, so it is not offered on Jev."
-                                    >
-                                      LLM only
-                                    </span>
-                                  )}
-                                </div>
+                {/* Per-tool AI toggles. Each one mirrors the toggle in its tool
+                    section, sharing the same form field, so flipping either
+                    place updates both. The list lives inside a fixed-height
+                    scroll container so adding more hooks doesn't push the
+                    rest of the form down. Descriptions are rendered as
+                    native title-attribute tooltips on the info icon to
+                    keep each row compact. Add new entries to the
+                    `aiPipelineHooks` array below as more tools gain AI
+                    hooks -- no JSX changes needed. */}
+                {(() => {
+                  const aiPipelineHooks: Array<{
+                    field: 'ffufAiExtensions' | 'nucleiAiTags' | 'wafAiClassifier' | 'nucleiAiResponseFilter' | 'takeoverAiClassifier'
+                    /** The LLM | Jev engine switch. Absent where Jev must not decide: the
+                        Nuclei false-positive filter deletes findings from target-controlled bytes. */
+                    engineField?: 'ffufAiUseJev' | 'nucleiTagsAiUseJev' | 'wafAiUseJev' | 'takeoverAiUseJev'
+                    label: string
+                    /** One line under the label; the full text stays in the info tooltip. */
+                    summary: string
+                    description: string
+                  }> = [
+                    {
+                      field: 'ffufAiExtensions',
+                      engineField: 'ffufAiUseJev',
+                      label: 'FFuf: Use AI for Extensions',
+                      summary: 'Picks file extensions per target from its response headers.',
+                      description: 'For each fuzz target, FFuf first sends a single HEAD request and asks the configured model to suggest the most likely file extensions based on the response headers (Server, X-Powered-By, X-AspNet-Version). The static FFuf extensions list in the FFuf module is ignored when this is on. Same toggle as in the FFuf module: flipping it here flips it there. A per-fingerprint cache means N hosts behind the same stack collapse to one LLM call.',
+                    },
+                    {
+                      field: 'nucleiAiTags',
+                      engineField: 'nucleiTagsAiUseJev',
+                      label: 'Nuclei: Use AI for Tag Selection',
+                      summary: 'Prunes the tag list to the detected tech stack, once per scan.',
+                      description: 'Once per scan, Nuclei aggregates the detected tech stack from http_probe (Wappalyzer + Server headers) and asks the configured model to prune its include-tags list to ones matching the stack. Drops irrelevant tags like wordpress on Node sites, adds tech-specific ones like apache or wp-plugin when detected. The static Include Tags list in the Nuclei module is ignored when this is on. Same toggle as in the Nuclei module: flipping it here flips it there. Candidate tag pool is built from the live nuclei-templates volume (count >= 50, ~125 broad-category tags).',
+                    },
+                    {
+                      field: 'wafAiClassifier',
+                      engineField: 'wafAiUseJev',
+                      label: 'Security Checks: Use AI for WAF Classification',
+                      summary: 'Scores WAF/CDN presence when the header check misses it.',
+                      description: 'Augments the static WAF/CDN header-token check used by the Direct IP and WAF Bypass checks. When the static list misses (modern WAFs strip or rebrand their headers), the response gets a second pass through the configured model, which scores WAF presence 0-100 from headers, body fingerprints, cookies, and latency. Same toggle as in the Security Checks module: flipping it here flips it there. A per-response fingerprint cache collapses identical responses to one LLM call.',
+                    },
+                    {
+                      field: 'nucleiAiResponseFilter',
+                      label: 'Nuclei: Use AI to Filter False-Positive Block Pages',
+                      summary: 'Tells a WAF block page from a real hit on suspicious findings.',
+                      description: "Augments the keyword-based WAF/rate-limit detection inside Nuclei's false-positive filter. When the static list misses (rebranded WAF blocks, AWS WAF JSON errors, custom Fortinet pages) but the response still looks like a block (suspicious status code on an injection finding), the LLM classifies the body as block-page or real hit. Suppresses fake findings and exposes real ones the keyword filter wrongly hides. Same toggle as in the Nuclei module: flipping it here flips it there. Per-response fingerprint cache keeps cost bounded.",
+                    },
+                    {
+                      field: 'takeoverAiClassifier',
+                      engineField: 'takeoverAiUseJev',
+                      label: 'Takeover: Use AI to Disambiguate WAF "No-Host" Pages',
+                      summary: 'Tells a real unclaimed-service page from a WAF block page.',
+                      description: "Subjack/Nuclei takeover fingerprints can collide with WAF block pages that say \"not found\" for a hostname the WAF doesn't recognize. When AI is on, each takeover candidate is probed; if the response carries no third-party vendor token (Heroku-Request-Id, x-amz-bucket-region, etc.), the LLM classifies the body as a real unclaimed-service page or a WAF block. AI-flagged collisions get a -40 score penalty so they land in manual_review instead of being shipped as criticals. Same toggle as in the Subdomain Takeover module: flipping it here flips it there.",
+                    },
+                  ]
+                  // Jev-only hooks: no LLM twin and no per-hook AI flag, so the card
+                  // has one Off | Jev control. Never part of the master cascade above:
+                  // aiInPipeline does not set or reset them.
+                  const jevOnlyHooks: Array<{
+                    field: 'ffufJevBasePaths' | 'httpxJevPageType' | 'resourceEnumJevToolHealth' | 'hakrawlerJevSeedOrder'
+                    label: string
+                    summary: string
+                    description: string
+                  }> = [
+                    {
+                      field: 'httpxJevPageType',
+                      label: 'HTTP Probe: Label Page Types with Jev',
+                      summary: 'Labels each probed page: app, login wall, parked, default, placeholder or error.',
+                      description: 'After httpx probes each URL, Jev labels every page with one yes/no question per class. A deterministic pre-filter (default install titles, parking CNAMEs, error statuses, login paths) supplies the label only where Jev gives no answer. An unsure answer is "app", so nothing is hidden. The label is written onto the Endpoint in the graph (page_class) and kept in the recon output; what gets scanned does not change. At most 300 distinct pages per scan, within 60 seconds. Same switch as in the httpx module.',
+                    },
+                    {
+                      field: 'ffufJevBasePaths',
+                      label: 'FFuf: Rank Smart-Fuzz Directories with Jev',
+                      summary: 'Picks which discovered directories FFuf smart-fuzzes under its cap.',
+                      description: 'When smart fuzz has more discovered base directories than its cap, Jev is asked, per directory, whether it is likely to hold sensitive, administrative or application content, and its best ones fill the cap. The same number of directories is fuzzed either way, and the random pick is the fallback when Jev is unavailable. Same switch as in the FFuf module.',
+                    },
+                    {
+                      field: 'hakrawlerJevSeedOrder',
+                      label: 'Hakrawler: Order Seeds with Jev',
+                      summary: 'Orders hosts so a capped crawl reaches the promising ones first.',
+                      description: 'Hakrawler crawls its seeds in list order and stops once its URL cap is reached, so with a tight cap hosts late in the alphabet are never crawled. Jev is asked, per probed host, whether it has a rich web application surface, and Hakrawler crawls host by host in that order (alphabetical when Jev is unavailable). Ordering only: every seed stays in the list. Partial recon keeps the alphabetical order. Same switch as in the Hakrawler module.',
+                    },
+                    {
+                      field: 'resourceEnumJevToolHealth',
+                      label: 'Resource Enum: Read Tool Errors with Jev',
+                      summary: 'Asks whether an empty result with odd error output was a transient failure.',
+                      description: 'Every empty result from a crawler or collector is classified from its exit code and error output, and one that looks like a failure is recorded as a coverage gap, with or without this switch. When the error output fits neither a routine line nor a known failure, Jev is asked whether it describes a transient failure a second run could fix. At most 20 questions per run, header values redacted. The verdict is kept in the recon output next to the coverage gap; no tool is re-run. Same switch as in the Resource Enum AI module.',
+                    },
+                  ]
+                  return (
+                    <div className={aiStyles.hookList} data-testid="ai-hook-list">
+                      {aiPipelineHooks.map((hook) => {
+                        const on = data[hook.field]
+                        return (
+                          <div
+                            key={hook.field}
+                            className={`${aiStyles.hookCard} ${on ? aiStyles.hookCardOn : ''}`}
+                            data-testid={`ai-hook-${hook.field}`}
+                          >
+                            <div className={aiStyles.hookHead}>
+                              <div className={aiStyles.hookText}>
+                                <AiToggleLabel label={hook.label} tooltip={hook.description} />
+                                <span className={aiStyles.hookSummary}>{hook.summary}</span>
                               </div>
-                            )
-                          })}
-                          {jevOnlyHooks.map((hook) => (
-                            <div
-                              key={hook.field}
-                              className={`${aiStyles.hookCard} ${data[hook.field] ? aiStyles.hookCardOn : ''}`}
-                              data-testid={`ai-hook-${hook.field}`}
-                            >
-                              <div className={aiStyles.hookHead}>
-                                <div className={aiStyles.hookText}>
-                                  <AiToggleLabel label={hook.label} tooltip={hook.description} />
-                                  <span className={aiStyles.hookSummary}>{hook.summary}</span>
-                                </div>
-                              </div>
-                              <div className={aiStyles.hookEngine}>
-                                <span className={aiStyles.engineLabel}>Jev only</span>
-                                <JevEngineControl
-                                  variant="jevOnly"
-                                  value={data[hook.field]}
-                                  enabled={data.aiInPipeline}
-                                  jevStatus={jevStatus}
-                                  onSelect={(on) => updateField(hook.field, on)}
-                                />
-                              </div>
+                              <Toggle
+                                checked={on}
+                                onChange={(checked) => updateField(hook.field, checked)}
+                              />
                             </div>
-                          ))}
+                            <div className={aiStyles.hookEngine}>
+                              <span className={aiStyles.engineLabel}>Engine</span>
+                              {hook.engineField ? (
+                                <JevEngineControl
+                                  value={data[hook.engineField]}
+                                  enabled={data.aiInPipeline && on}
+                                  disabledHint="Turn this hook on to choose its engine."
+                                  jevStatus={jevStatus}
+                                  onSelect={(useJev) => updateField(hook.engineField!, useJev)}
+                                />
+                              ) : (
+                                <span
+                                  className={aiStyles.llmOnly}
+                                  title="This hook can drop a finding based on bytes the target controls, so it is not offered on Jev."
+                                >
+                                  LLM only
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                      {jevOnlyHooks.map((hook) => (
+                        <div
+                          key={hook.field}
+                          className={`${aiStyles.hookCard} ${data[hook.field] ? aiStyles.hookCardOn : ''}`}
+                          data-testid={`ai-hook-${hook.field}`}
+                        >
+                          <div className={aiStyles.hookHead}>
+                            <div className={aiStyles.hookText}>
+                              <AiToggleLabel label={hook.label} tooltip={hook.description} />
+                              <span className={aiStyles.hookSummary}>{hook.summary}</span>
+                            </div>
+                          </div>
+                          <div className={aiStyles.hookEngine}>
+                            <span className={aiStyles.engineLabel}>Jev only</span>
+                            <JevEngineControl
+                              variant="jevOnly"
+                              value={data[hook.field]}
+                              enabled={data.aiInPipeline}
+                              jevStatus={jevStatus}
+                              onSelect={(on) => updateField(hook.field, on)}
+                            />
+                          </div>
                         </div>
-                      )
-                    })()}
-                  </>
-                )}
-              </div>
+                      ))}
+                    </div>
+                  )
+                })()}
+              </>
+            )}
+          </div>
 
-              <div className={styles.subSection}>
-                <h3 className={styles.subSectionTitle}>Domain Verification</h3>
-                <div className={styles.toggleRow}>
-                  <div>
-                    <span className={styles.toggleLabel}>Verify Domain Ownership</span>
-                    <p className={styles.toggleDescription}>
-                      Require DNS TXT record verification before scanning
-                    </p>
-                  </div>
-                  <Toggle
-                    checked={data.verifyDomainOwnership}
-                    onChange={(checked) => updateField('verifyDomainOwnership', checked)}
-                  />
+          {/* Domain ownership is a DNS TXT check, which a bare IP target cannot satisfy. */}
+          {!ipMode && (
+            <div className={styles.subSection}>
+              <h3 className={styles.subSectionTitle}>Domain Verification</h3>
+              <div className={styles.toggleRow}>
+                <div>
+                  <span className={styles.toggleLabel}>Verify Domain Ownership</span>
+                  <p className={styles.toggleDescription}>
+                    Require DNS TXT record verification before scanning
+                  </p>
                 </div>
-
-                {data.verifyDomainOwnership && (
-                  <div className={styles.fieldRow}>
-                    <div className={styles.fieldGroup}>
-                      <label className={styles.fieldLabel}>Ownership Token</label>
-                      <input
-                        type="text"
-                        className="textInput"
-                        value={data.ownershipToken}
-                        onChange={(e) => updateField('ownershipToken', e.target.value)}
-                      />
-                    </div>
-                    <div className={styles.fieldGroup}>
-                      <label className={styles.fieldLabel}>TXT Record Prefix</label>
-                      <input
-                        type="text"
-                        className="textInput"
-                        value={data.ownershipTxtPrefix}
-                        onChange={(e) => updateField('ownershipTxtPrefix', e.target.value)}
-                      />
-                    </div>
-                  </div>
-                )}
+                <Toggle
+                  checked={data.verifyDomainOwnership}
+                  onChange={(checked) => updateField('verifyDomainOwnership', checked)}
+                />
               </div>
-            </>
+
+              {data.verifyDomainOwnership && (
+                <div className={styles.fieldRow}>
+                  <div className={styles.fieldGroup}>
+                    <label className={styles.fieldLabel}>Ownership Token</label>
+                    <input
+                      type="text"
+                      className="textInput"
+                      value={data.ownershipToken}
+                      onChange={(e) => updateField('ownershipToken', e.target.value)}
+                    />
+                  </div>
+                  <div className={styles.fieldGroup}>
+                    <label className={styles.fieldLabel}>TXT Record Prefix</label>
+                    <input
+                      type="text"
+                      className="textInput"
+                      value={data.ownershipTxtPrefix}
+                      onChange={(e) => updateField('ownershipTxtPrefix', e.target.value)}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* --- Engagement limits ------------------------------------------------

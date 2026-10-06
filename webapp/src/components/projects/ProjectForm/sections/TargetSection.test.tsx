@@ -303,3 +303,57 @@ describe('the AI in Pipeline panel', () => {
       .toHaveAttribute('aria-pressed', 'true')
   })
 })
+
+// IP mode once hid the whole panel behind the Domain Verification gate, so an IP
+// project had no way to turn AI or Jev on even though the backend runs the same
+// hooked tools for every mode.
+describe('target modes: AI in Pipeline everywhere, Domain Verification never on a bare IP', () => {
+  // [mode, the fields that select it, whether Domain Verification applies]
+  const MODES: Array<[string, Partial<Data>, boolean]> = [
+    ['domain', { ipMode: false, domainBatchMode: false }, true],
+    ['ip', { ipMode: true, domainBatchMode: false, targetIps: ['172.25.0.92'] }, false],
+    ['batch', { ipMode: false, domainBatchMode: true }, true],
+  ]
+  const CASCADED = ['ffufAiExtensions', 'nucleiAiTags', 'wafAiClassifier', 'nucleiAiResponseFilter', 'takeoverAiClassifier']
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+      ok: true, status: 200,
+      json: async () => url.includes('llm-providers') ? [{ id: 'j', providerType: 'jev', apiKey: '••••c0de', modelIdentifier: 'jev-1.13.0' }] : {},
+    })))
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  test.each(MODES)('%s: the master switch and, once on, every hook card render', (_mode, modeData) => {
+    renderSection({ ...modeData, aiInPipeline: true })
+    expect(screen.getByText('Enable AI in Pipeline')).toBeInTheDocument()
+    for (const field of [...CASCADED, 'httpxJevPageType', 'ffufJevBasePaths', 'hakrawlerJevSeedOrder', 'resourceEnumJevToolHealth']) {
+      expect(screen.getByTestId(`ai-hook-${field}`)).toBeInTheDocument()
+    }
+  })
+
+  test.each(MODES)('%s: flipping the master switch cascades to every per-tool AI flag', (_mode, modeData) => {
+    const s = renderSection({ ...modeData, aiInPipeline: false })
+    let row: HTMLElement | null = screen.getByText('Enable AI in Pipeline').parentElement
+    while (row && within(row).queryAllByRole('switch').length === 0) row = row.parentElement
+    fireEvent.click(within(row!).getAllByRole('switch')[0])
+    expect(s.data.aiInPipeline).toBe(true)
+    for (const field of CASCADED) expect(s.data[field]).toBe(true)
+  })
+
+  test.each(MODES)('%s: Domain Verification shown = %s', (_mode, modeData, applies) => {
+    renderSection(modeData)
+    expect(screen.queryByText('Domain Verification') !== null).toBe(applies)
+  })
+
+  test('ip: a hook\'s Jev engine can be picked once the hook is on', async () => {
+    const s = renderSection({
+      ipMode: true, domainBatchMode: false, targetIps: ['172.25.0.92'],
+      aiInPipeline: true, ffufAiExtensions: true, ffufAiUseJev: false,
+    })
+    const jev = within(screen.getByTestId('ai-hook-ffufAiExtensions')).getByRole('button', { name: 'Jev' })
+    await waitFor(() => expect(jev).toBeEnabled())
+    fireEvent.click(jev)
+    expect(s.updateField).toHaveBeenCalledWith('ffufAiUseJev', true)
+  })
+})
