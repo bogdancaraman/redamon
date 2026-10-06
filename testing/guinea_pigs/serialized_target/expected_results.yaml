@@ -1,0 +1,111 @@
+# Expected recon serialized_scan results for the serialized_target guinea pig.
+# One row per serialization family the module (recon/serialized_scan/signatures.py)
+# must flag. Validated offline against the exact signatures by
+# validate_payloads.py, and end-to-end by a live recon run against 172.25.0.92.
+#
+# Each live hit becomes a :Vulnerability candidate with:
+#   source=serialized_scan, vulnerability_type=insecure_deserialization,
+#   severity=info, needs_agent_confirmation=true, confidence=<detector belief>.
+
+target_ip: 172.25.0.92
+host_alias: http://localhost:9092
+
+required_formats:   # the 13 families that MUST all be detected
+  - native_java
+  - hessian
+  - jackson_json
+  - fastjson
+  - xmldecoder
+  - xstream
+  - snakeyaml
+  - php_serialize
+  - phar
+  - python_pickle
+  - dotnet_binaryformatter
+  - viewstate
+  - ruby_marshal
+
+endpoints:
+  - path: /java/native
+    transports: [header, cookie]
+    formats: [native_java]
+    via: "Content-Type application/x-java-serialized-object + Set-Cookie JSESSIONID=rO0AB..."
+  - path: /java/hessian
+    transports: [header]
+    formats: [hessian]
+    via: "Content-Type application/x-hessian"
+  - path: /java/jackson
+    transports: [header]
+    formats: [jackson_json]
+    via: 'X-Jackson-State: {"@class":...}'
+  - path: /java/fastjson
+    transports: [header]
+    formats: [fastjson]
+    via: 'X-Fastjson: {"@type":...}'
+  - path: /java/xmldecoder
+    transports: [header]
+    formats: [xmldecoder, xstream]   # <java version= / <object class= + FQCN element
+    via: "X-Xmldec: <java version=...><object class=...>"
+  - path: /java/xstream-elem
+    transports: [header]
+    formats: [xstream]
+    via: "X-Xstream-Elem: <java.util.PriorityQueue ...>"
+  - path: /java/xstream-attr
+    transports: [header]
+    formats: [xstream]
+    via: 'X-Xstream-Attr: <map class="java.util.HashMap">'
+  - path: /java/snakeyaml
+    transports: [header]
+    formats: [snakeyaml]
+    via: "X-Yaml: !!javax.script.ScriptEngineManager [...]"
+  - path: /java/hex
+    transports: [header]
+    formats: [native_java]
+    via: "X-Hex-Blob: aced0005... (hex of AC ED 00 05)"
+  - path: /php/object
+    transports: [header]
+    formats: [php_serialize]
+    via: 'X-Php-Obj: O:4:"User":...'
+  - path: /php/array
+    transports: [header]
+    formats: [php_serialize]
+    via: "X-Php-Arr: a:2:{...}"
+  - path: /php/phar
+    transports: [header]
+    formats: [phar]
+    via: "X-Php-Phar: phar://..."
+  - path: /python/pickle4
+    transports: [cookie]
+    formats: [python_pickle]
+    via: "Set-Cookie session=gASV... (proto 4/5)"
+  - path: /python/pickle2
+    transports: [header]
+    formats: [python_pickle]
+    via: "X-Pickle2: gAJ9... (proto 2)"
+  - path: /dotnet/binaryformatter
+    transports: [header]
+    formats: [dotnet_binaryformatter]
+    via: "X-Net-Bin: AAEAAAD/////..."
+  - path: /dotnet/viewstate
+    transports: [header]
+    formats: [viewstate]
+    via: "X-AspNet-Vs: __VIEWSTATE=..."
+  - path: /ruby/marshal
+    transports: [cookie]
+    formats: [ruby_marshal]
+    via: "Set-Cookie _app_session=BAg... (04 08 Marshal)"
+
+encoding_layers:   # decode-and-recurse coverage
+  - path: /encoded/gzip-java
+    chain: [base64, gzip]
+    formats: [native_java]
+  - path: /encoded/url-b64-java
+    chain: [url, base64]
+    formats: [native_java]
+  - path: /encoded/bomb
+    expect: "NO candidate; scanner aborts the >1 MiB inflate (bomb-safe), pipeline stays green"
+
+param_transport:   # resource_enum param path (best-effort, crawler-dependent)
+  - "/api/load?data=<urlencoded base64 Java>  -> native_java via param"
+  - "/api/state?__VIEWSTATE=...               -> viewstate via param name"
+  - "/forms/aspnet hidden __VIEWSTATE          -> viewstate via param name"
