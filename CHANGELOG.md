@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.26.0] - 2026-10-07
+
+### Added
+
+- **Seven switches for the Insecure Deserialization skill**, under AI Agent → Agent Skills → Insecure Deserialization (and settable over MCP): OOB callback workflow (on), OOB provider (oast.fun), Timing channel (on), Find sinks beyond recon candidates (on), Runtimes to cover (all seven), Exec gadget step (off) and PHAR polyglot upload (off). Each switch adds or removes a whole block of the agent prompt, and the prompt always prints the resulting posture, so with the OOB callback off the agent never registers a callback domain and confirms through the timing and error channels only. The exec step needs the OOB callback (its proof travels over it), and PHAR needs PHP among the runtimes. Defaults keep today's behaviour, except that the PHAR sub-section, which uploads a file to the target, is now off until an operator enables it.
+- **A blind sink in the serialized-object guinea pig** (`/account/prefs`), which deserializes its cookie but answers the same page either way, so the timing channel can be proven where the error channel shows nothing.
+
+### Changed
+
+- The interactsh listener uses the configured provider instead of a hard-coded `oast.fun`, and each oracle delivery gets its own label, so one callback can no longer be claimed for several endpoints.
+- A code-execution proof is recorded as `exploit_success`, a proof type, alongside the Step 5 confirmation.
+
 ## [6.25.2] - 2026-10-07
 
 ### Changed

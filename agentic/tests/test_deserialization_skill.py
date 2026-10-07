@@ -1,8 +1,9 @@
 """Tests for the Insecure Deserialization built-in attack skill (plan §8, §14).
 
 Covers state registration, classification wiring (incl. the rce disambiguation
-and both ordered lists), project-settings defaults, prompt template formatting
-with the two knobs, the graph-candidate handshake discipline (Step 5 carries
+and both ordered lists), project-settings defaults and their columns, the prompt
+assembled from the seven switches (each block present only when its switch is on),
+the graph-candidate handshake discipline (Step 5 carries
 finding_type='vulnerability_confirmed' AND the candidate id, Step 6 re-checks the
 edge), conditional injection + phase guard, the attack-path behaviour blurb, the
 frontend artifacts across the webapp layers, and regression on existing skills.
@@ -40,6 +41,9 @@ from prompts.deserialization_prompts import (
     DESERIALIZATION_TOOLS,
     DESERIALIZATION_OOB_WORKFLOW,
     DESERIALIZATION_PAYLOAD_REFERENCE,
+    DESERIALIZATION_RUNTIMES,
+    build_deserialization_parts,
+    parse_runtimes,
 )
 from prompts.classification import (
     _DESERIALIZATION_SECTION,
@@ -50,9 +54,37 @@ from prompts.classification import (
 )
 
 _DEFAULTS = {
-    'deser_exec_gadgets_enabled': False,
+    'deser_oob_callback_enabled': True,
     'deser_oob_provider': 'oast.fun',
+    'deser_oob_channel': 'the primary channel.',
+    'deser_timing_enabled': True,
+    'deser_timing_channel': 'the timing section appended below.',
+    'deser_find_sinks_enabled': True,
+    'deser_runtimes': 'java, java_typed, python, php, node, ruby, dotnet',
+    'deser_exec_gadgets_enabled': False,
+    'deser_phar_enabled': False,
 }
+
+#: The project defaults, as the agent reads them.
+_SWITCH_DEFAULTS = {
+    'DESERIALIZATION_OOB_CALLBACK_ENABLED': True,
+    'DESERIALIZATION_OOB_PROVIDER': 'oast.fun',
+    'DESERIALIZATION_TIMING_ENABLED': True,
+    'DESERIALIZATION_FIND_SINKS_ENABLED': True,
+    'DESERIALIZATION_RUNTIMES': 'java,java_typed,python,php,node,ruby,dotnet',
+    'DESERIALIZATION_EXEC_GADGETS_ENABLED': False,
+    'DESERIALIZATION_PHAR_ENABLED': False,
+}
+
+
+def _build(**overrides):
+    settings = dict(_SWITCH_DEFAULTS)
+    settings.update(overrides)
+    return "\n".join(build_deserialization_parts(lambda k, d=None: settings.get(k, d)))
+
+
+#: Every switch on, every runtime: the most the skill can ever send.
+_EVERYTHING = dict(DESERIALIZATION_EXEC_GADGETS_ENABLED=True, DESERIALIZATION_PHAR_ENABLED=True)
 
 
 class TestStateRegistration(unittest.TestCase):
@@ -119,6 +151,40 @@ class TestProjectSettings(unittest.TestCase):
     def test_oob_provider_default(self):
         self.assertEqual(DEFAULT_AGENT_SETTINGS['DESERIALIZATION_OOB_PROVIDER'], 'oast.fun')
 
+    def test_new_switch_defaults(self):
+        self.assertIs(DEFAULT_AGENT_SETTINGS['DESERIALIZATION_TIMING_ENABLED'], True)
+        self.assertIs(DEFAULT_AGENT_SETTINGS['DESERIALIZATION_FIND_SINKS_ENABLED'], True)
+        self.assertIs(DEFAULT_AGENT_SETTINGS['DESERIALIZATION_PHAR_ENABLED'], False)
+        self.assertEqual(parse_runtimes(DEFAULT_AGENT_SETTINGS['DESERIALIZATION_RUNTIMES']),
+                         list(DESERIALIZATION_RUNTIMES))
+
+    def test_every_switch_is_read_from_its_project_column(self):
+        # A column name that does not match leaves the switch at its default for
+        # every project, silently: the UI would show a toggle that does nothing.
+        import project_settings as ps
+        columns = {
+            'deserializationOobCallbackEnabled': ('DESERIALIZATION_OOB_CALLBACK_ENABLED', False),
+            'deserializationOobProvider': ('DESERIALIZATION_OOB_PROVIDER', 'oob.example.test'),
+            'deserializationTimingEnabled': ('DESERIALIZATION_TIMING_ENABLED', False),
+            'deserializationFindSinksEnabled': ('DESERIALIZATION_FIND_SINKS_ENABLED', False),
+            'deserializationRuntimes': ('DESERIALIZATION_RUNTIMES', 'python'),
+            'deserializationExecGadgetsEnabled': ('DESERIALIZATION_EXEC_GADGETS_ENABLED', True),
+            'deserializationPharEnabled': ('DESERIALIZATION_PHAR_ENABLED', True),
+        }
+        project = {'userId': 'u1', **{col: value for col, (_, value) in columns.items()}}
+
+        def fake_get(url, *a, **kw):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = project if "/api/projects/" in url else (
+                [] if "/tradecraft-resources" in url or "/llm-providers" in url else {})
+            return resp
+
+        with patch("requests.get", side_effect=fake_get):
+            settings = ps.fetch_agent_settings("p1", "http://webapp")
+        for col, (key, value) in columns.items():
+            self.assertEqual(settings[key], value, f"{col} does not reach {key}")
+
 
 class TestPromptTemplate(unittest.TestCase):
     def _fmt(self, **over):
@@ -183,6 +249,16 @@ class TestPromptTemplate(unittest.TestCase):
         self.assertRegex(step5, r"(?i)same response")
         self.assertRegex(step5, r"(?i)never write .emit chain_findings. as a next step")
 
+    def test_step6_verifies_a_new_sink_too(self):
+        # A live E2E run proved a blind sink by timing, completed, and wrote
+        # "Recorded as vulnerability_confirmed" with no chain_findings entry: Step 6
+        # covered only linked candidates, so a PART B finding was never checked.
+        step6 = self._section(self._fmt(), "## Step 6", "## Dead ends")
+        self.assertIn("PART B", step6)
+        self.assertIn("MATCH (cf:ChainFinding {finding_type:'vulnerability_confirmed'})", step6)
+        self.assertIn('Before action="complete"', step6)
+        self.assertRegex(step6, r"(?i)never write that a finding is\s+recorded unless")
+
     def test_step6_recovers_in_this_response_not_by_requerying(self):
         # The same run then looped on the verification query four times.
         step6 = self._section(self._fmt(), "## Step 6", "## Dead ends")
@@ -225,8 +301,8 @@ class TestRewriteCoverage(unittest.TestCase):
         return DESERIALIZATION_TOOLS.format(**_DEFAULTS)
 
     def _all(self):
-        # the three prompt strings as the agent sees them (not the module docstring)
-        return self._fmt() + DESERIALIZATION_OOB_WORKFLOW + DESERIALIZATION_PAYLOAD_REFERENCE
+        # every block the agent can ever be sent (not the module docstring)
+        return _build(**_EVERYTHING)
 
     def test_self_contained_no_external_document_reference(self):
         # the whole point of the rewrite: never defer to a doc not in context
@@ -236,7 +312,7 @@ class TestRewriteCoverage(unittest.TestCase):
             self.assertNotIn(banned, blob, f"dangling reference: {banned!r}")
 
     def test_has_find_from_scratch_path(self):
-        out = self._fmt()
+        out = _build()
         self.assertRegex(out, r"(?i)find new")
         self.assertRegex(out, r"(?i)sweep every input")
 
@@ -293,11 +369,7 @@ class TestWorkflowInjection(unittest.TestCase):
     def _build(self, enabled, allowed_tools=None, overrides=None):
         if allowed_tools is None:
             allowed_tools = ['kali_shell', 'execute_curl', 'execute_code', 'query_graph']
-        defaults = {
-            'DESERIALIZATION_OOB_CALLBACK_ENABLED': True,
-            'DESERIALIZATION_EXEC_GADGETS_ENABLED': False,
-            'DESERIALIZATION_OOB_PROVIDER': 'oast.fun',
-        }
+        defaults = dict(_SWITCH_DEFAULTS)
         if overrides:
             defaults.update(overrides)
         with patch('prompts.get_setting', side_effect=lambda k, d=None: defaults.get(k, d)), \
@@ -322,6 +394,161 @@ class TestWorkflowInjection(unittest.TestCase):
         out = self._build({"deserialization"},
                           overrides={'DESERIALIZATION_OOB_CALLBACK_ENABLED': False})
         self.assertNotIn("interactsh-client", out)
+
+    def test_the_injected_prompt_is_the_switch_assembled_one(self):
+        out = self._build({"deserialization"},
+                          overrides={'DESERIALIZATION_TIMING_ENABLED': False,
+                                     'DESERIALIZATION_RUNTIMES': 'python'})
+        self.assertNotIn("## Timing channel", out)
+        self.assertIn("Runtimes covered:                     python", out)
+
+
+class TestSwitchBlocks(unittest.TestCase):
+    """Each switch appends its block only when it is on, prints its value in the
+    settings header, and the main text carries the rule for when it is off."""
+
+    def test_header_prints_every_switch(self):
+        out = _build()
+        for line in ("OOB callback (interactsh oracle):     True",
+                     "OOB provider:                         oast.fun",
+                     "Timing channel:                       True",
+                     "Find sinks beyond recon candidates:   True",
+                     "Exec gadget step (Step 7):            False",
+                     "PHAR polyglot upload:                 False"):
+            self.assertIn(line, out)
+
+    def test_off_rules_are_always_in_the_main_text(self):
+        out = _build()
+        for rule in ("`OOB callback: False`", "`Timing channel: False`",
+                     "`Find sinks beyond recon candidates: False`", "`Runtimes covered`",
+                     "`Exec gadget step: False`", "`PHAR polyglot upload: False`"):
+            self.assertIn(rule, out)
+
+    def test_oob_block_follows_the_switch(self):
+        on, off = _build(), _build(DESERIALIZATION_OOB_CALLBACK_ENABLED=False)
+        self.assertIn("interactsh-client", on)
+        self.assertNotIn("interactsh-client", off)
+        # the per-runtime callback oracles go with it
+        self.assertIn("socket.gethostbyname", on)
+        self.assertNotIn("socket.gethostbyname", off)
+        self.assertNotIn("ysoserial URLDNS http://", off)
+        self.assertNotIn("REGISTERED_DOMAIN", off)
+
+    def test_oob_off_keeps_the_error_channel(self):
+        off = _build(DESERIALIZATION_OOB_CALLBACK_ENABLED=False,
+                     DESERIALIZATION_TIMING_ENABLED=False)
+        self.assertIn("## The error channel", off)
+        self.assertRegex(off, r"(?i)inconclusive")
+
+    def test_provider_reaches_the_listener_command(self):
+        out = _build(DESERIALIZATION_OOB_PROVIDER='oob.example.test')
+        self.assertIn("interactsh-client -server oob.example.test ", out)
+        self.assertIn("\\\\.oob.example.test' /tmp/oast.log", out)
+        self.assertNotIn("-server oast.fun", out)
+
+    def test_an_unsafe_or_empty_provider_falls_back_to_oast_fun(self):
+        # the value is pasted into a shell command in the prompt
+        for bad in ("", "x; rm -rf /", "$(id).example", "a b"):
+            out = _build(DESERIALIZATION_OOB_PROVIDER=bad)
+            listener = [line for line in out.splitlines() if "interactsh-client -server" in line]
+            self.assertEqual(len(listener), 1, bad)
+            self.assertIn("-server oast.fun -json", listener[0], bad)
+
+    def test_each_delivery_gets_its_own_label(self):
+        self.assertIn("e1.REGISTERED_DOMAIN", _build())
+
+    def test_a_disabled_channel_is_named_disabled_in_the_channel_list(self):
+        # A live run with the timing block merely ABSENT still sent a sleep()
+        # pickle to get a verdict. The list must say DISABLED, with the forms.
+        off = _build(DESERIALIZATION_TIMING_ENABLED=False,
+                     DESERIALIZATION_OOB_CALLBACK_ENABLED=False)
+        confirm = off[off.index("## CONFIRM THE SINK"):off.index("### Prioritise")]
+        self.assertIn("1. OUT-OF-BAND ORACLE: DISABLED for this project", confirm)
+        self.assertIn("2. TIMING: DISABLED for this project", confirm)
+        self.assertIn("no sleep or delay call", confirm)
+        self.assertRegex(confirm, r"(?i)never reach for a disabled channel")
+        on = _build()
+        self.assertIn("1. OUT-OF-BAND ORACLE: the primary channel", on)
+        self.assertIn("2. TIMING: the timing section appended below.", on)
+        self.assertNotIn("DISABLED for this project", on)
+
+    def test_step6_part_b_matches_the_agents_own_evidence(self):
+        # The same check once matched an EARLIER run's finding for the endpoint.
+        out = _build()
+        step6 = out[out.index("## Step 6"):out.index("## Dead ends")]
+        self.assertIn("RETURN cf.title, cf.evidence, cf.created_at", step6)
+        self.assertRegex(step6, r"(?i)evidence is the proof YOU just recorded")
+
+    def test_timing_block_follows_the_switch(self):
+        self.assertIn("## Timing channel", _build())
+        self.assertNotIn("## Timing channel", _build(DESERIALIZATION_TIMING_ENABLED=False))
+
+    def test_find_sinks_block_and_reference_follow_the_switch(self):
+        on, off = _build(), _build(DESERIALIZATION_FIND_SINKS_ENABLED=False)
+        self.assertIn("## PART B", on)
+        self.assertIn("## Format-recognition reference", on)
+        self.assertNotIn("## PART B", off)
+        self.assertNotIn("sweep every input", off.lower())
+        self.assertNotIn("## Format-recognition reference", off)
+
+    def test_runtimes_select_their_blocks(self):
+        out = _build(DESERIALIZATION_RUNTIMES='python, ruby')
+        self.assertIn("- PYTHON (", out)
+        self.assertIn("- RUBY (", out)
+        for absent in ("- JAVA (native_java", "- JAVA polymorphic", "- PHP (", "- NODE (",
+                       "- .NET ViewState (viewstate)"):
+            self.assertNotIn(absent, out)
+        self.assertIn("Runtimes covered:                     python, ruby", out)
+
+    def test_runtimes_ignore_unknown_names_and_never_empty_the_prompt(self):
+        self.assertEqual(parse_runtimes("PYTHON, cobol"), ["python"])
+        self.assertEqual(parse_runtimes("cobol"), list(DESERIALIZATION_RUNTIMES))
+        self.assertEqual(parse_runtimes(""), list(DESERIALIZATION_RUNTIMES))
+        self.assertEqual(parse_runtimes(None), list(DESERIALIZATION_RUNTIMES))
+
+    def test_exec_block_needs_the_switch_and_the_oob_callback(self):
+        self.assertNotIn("## Step 7", _build())
+        on = _build(DESERIALIZATION_EXEC_GADGETS_ENABLED=True)
+        self.assertIn("## Step 7", on)
+        self.assertIn("Exec gadget step (Step 7):            True", on)
+        self.assertIn("exploit_success", on)
+        no_oob = _build(DESERIALIZATION_EXEC_GADGETS_ENABLED=True,
+                        DESERIALIZATION_OOB_CALLBACK_ENABLED=False)
+        self.assertNotIn("## Step 7", no_oob)
+        self.assertIn("False (it needs the OOB callback)", no_oob)
+
+    def test_exec_payloads_appear_only_in_the_exec_block(self):
+        # with Step 7 off, no code-execution example ships anywhere in the prompt
+        # (the reference ladder may still NAME the gated step; it gives no payload)
+        off = _build(DESERIALIZATION_PHAR_ENABLED=True)
+        for exec_marker in ("CommonsCollections6", "(os.system,", "child_process.exec",
+                            "Monolog/RCE1", "viewgen --webconfig",
+                            "universal Ruby gadget object-graph"):
+            self.assertNotIn(exec_marker, off, exec_marker)
+
+    def test_exec_block_lists_only_the_covered_runtimes(self):
+        out = _build(DESERIALIZATION_EXEC_GADGETS_ENABLED=True, DESERIALIZATION_RUNTIMES='python')
+        self.assertIn("- Python: a pickle __reduce__", out)
+        self.assertNotIn("CommonsCollections6", out)
+
+    def test_phar_block_needs_the_switch_and_php(self):
+        self.assertNotIn("## PHP PHAR", _build())
+        self.assertIn("## PHP PHAR", _build(DESERIALIZATION_PHAR_ENABLED=True))
+        no_php = _build(DESERIALIZATION_PHAR_ENABLED=True, DESERIALIZATION_RUNTIMES='java')
+        self.assertNotIn("## PHP PHAR", no_php)
+        self.assertIn("False (php is not among the runtimes)", no_php)
+
+    def test_no_template_placeholder_survives_any_combination(self):
+        import itertools
+        for oob, timing, find, exe, phar in itertools.product([True, False], repeat=5):
+            out = _build(DESERIALIZATION_OOB_CALLBACK_ENABLED=oob,
+                         DESERIALIZATION_TIMING_ENABLED=timing,
+                         DESERIALIZATION_FIND_SINKS_ENABLED=find,
+                         DESERIALIZATION_EXEC_GADGETS_ENABLED=exe,
+                         DESERIALIZATION_PHAR_ENABLED=phar)
+            self.assertNotIn("{deser_", out)
+            self.assertNotIn("{{", out)
+            self.assertNotIn("—", out)
 
 
 class TestAttackPathBehaviour(unittest.TestCase):

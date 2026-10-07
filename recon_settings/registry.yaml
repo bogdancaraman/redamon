@@ -115,6 +115,11 @@ tools:
     phase: standalone
     traffic: none
     form_section: "CypherFixSettingsSection"
+  deserialization:
+    title: "Insecure deserialization"
+    phase: standalone
+    traffic: active
+    form_section: "DeserializationSection"
   dns:
     title: "DNS"
     phase: domain_discovery
@@ -2083,6 +2088,105 @@ fields:
     group: identity
     meaning: >-
       Free-text notes about the engagement, shown beside the project name.
+  deserializationExecGadgetsEnabled:
+    tool: deserialization
+    runtime_key: null
+    unit: none
+    phase: standalone
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: attack
+    meaning: >-
+      Whether the Insecure Deserialization skill may escalate a confirmed sink to
+      one code-execution gadget (Step 7). Off by default. Its proof travels over
+      the out-of-band callback, so it also needs the OOB callback on; without it
+      the Step 7 block is left out of the prompt and the agent stops at the
+      confirmed sink.
+  deserializationFindSinksEnabled:
+    tool: deserialization
+    runtime_key: null
+    unit: none
+    phase: standalone
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: attack
+    meaning: >-
+      Whether the Insecure Deserialization skill may sweep the target's inputs for
+      sinks recon never flagged. When off, the agent only confirms the candidates
+      the serialized-object scan wrote to the graph.
+  deserializationOobCallbackEnabled:
+    tool: deserialization
+    runtime_key: null
+    unit: none
+    phase: standalone
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: egress
+    meaning: >-
+      Whether the Insecure Deserialization skill may confirm a sink with the
+      out-of-band interactsh oracle, which makes the target look up a domain
+      registered on the OOB provider. When off, the setup block is left out of
+      the prompt and the agent confirms through the error and timing channels
+      only, never through external callback infrastructure.
+  deserializationOobProvider:
+    tool: deserialization
+    runtime_key: null
+    unit: none
+    phase: standalone
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    validator: hostname
+    group: egress
+    meaning: >-
+      interactsh server the deserialization oracle registers its callback domain
+      on. Use a self-hosted instance if oast.fun is blocked or a third-party
+      callback service is not allowed. Empty means oast.fun. Only used when the
+      OOB callback is on.
+  deserializationPharEnabled:
+    tool: deserialization
+    runtime_key: null
+    unit: none
+    phase: standalone
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: attack
+    meaning: >-
+      Whether the Insecure Deserialization skill may use PHP PHAR polyglots, which
+      means uploading a crafted file to the target. Off by default. Only used when
+      php is among the runtimes.
+  deserializationRuntimes:
+    tool: deserialization
+    runtime_key: null
+    unit: none
+    phase: standalone
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    validator: free_text
+    group: attack
+    meaning: >-
+      Comma-separated runtimes whose oracle blocks ship in the Insecure
+      Deserialization prompt: java, java_typed, python, php, node, ruby, dotnet.
+      Unknown names are ignored; an empty list ships every runtime.
+  deserializationTimingEnabled:
+    tool: deserialization
+    runtime_key: null
+    unit: none
+    phase: standalone
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: attack
+    meaning: >-
+      Whether the Insecure Deserialization skill may confirm a sink through
+      response timing, which holds a request open on the target until a delay or
+      timeout ends. Turn it off on fragile targets or when the rules of
+      engagement forbid anything that ties up a server worker.
   dnsEnabled:
     tool: dns
     runtime_key: "DNS_ENABLED"

@@ -1284,6 +1284,15 @@ model Project {
   pathTraversalRequestTimeout           Int      @default(10)    @map("path_traversal_request_timeout")
   pathTraversalOobProvider              String   @default("oast.fun") @map("path_traversal_oob_provider")
 
+  // ========== INSECURE DESERIALIZATION SETTINGS ==========
+  deserializationOobCallbackEnabled     Boolean  @default(true)  @map("deserialization_oob_callback_enabled")
+  deserializationOobProvider            String   @default("oast.fun") @map("deserialization_oob_provider")
+  deserializationTimingEnabled          Boolean  @default(true)  @map("deserialization_timing_enabled")
+  deserializationFindSinksEnabled       Boolean  @default(true)  @map("deserialization_find_sinks_enabled")
+  deserializationRuntimes               String   @default("java,java_typed,python,php,node,ruby,dotnet") @map("deserialization_runtimes")
+  deserializationExecGadgetsEnabled     Boolean  @default(false) @map("deserialization_exec_gadgets_enabled")
+  deserializationPharEnabled            Boolean  @default(false) @map("deserialization_phar_enabled")
+
   // ========== ATTACK SKILL CONFIG ==========
   attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"deserialization\":false,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}") @map("attack_skill_config")
 

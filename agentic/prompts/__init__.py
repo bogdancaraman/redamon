@@ -106,6 +106,7 @@ from .deserialization_prompts import (
     DESERIALIZATION_TOOLS,
     DESERIALIZATION_OOB_WORKFLOW,
     DESERIALIZATION_PAYLOAD_REFERENCE,
+    build_deserialization_parts,
 )
 from .path_traversal_prompts import (
     PATH_TRAVERSAL_TOOLS,
@@ -346,16 +347,7 @@ def build_builtin_skill_workflow(
     elif (attack_path_type == "deserialization"
             and "deserialization" in enabled_builtins
             and "kali_shell" in allowed_tools):
-        deser_oob_enabled = get_setting('DESERIALIZATION_OOB_CALLBACK_ENABLED', True)
-        deser_exec_enabled = get_setting('DESERIALIZATION_EXEC_GADGETS_ENABLED', False)
-        deser_settings = {
-            'deser_exec_gadgets_enabled': deser_exec_enabled,
-            'deser_oob_provider': get_setting('DESERIALIZATION_OOB_PROVIDER', 'oast.fun'),
-        }
-        parts.append(DESERIALIZATION_TOOLS.format(**deser_settings))
-        if deser_oob_enabled:
-            parts.append(DESERIALIZATION_OOB_WORKFLOW)
-        parts.append(DESERIALIZATION_PAYLOAD_REFERENCE)
+        parts.extend(build_deserialization_parts(get_setting))
         return parts
     elif (attack_path_type == "rce"
             and "rce" in enabled_builtins
@@ -691,6 +683,7 @@ __all__ = [
     "DESERIALIZATION_TOOLS",
     "DESERIALIZATION_OOB_WORKFLOW",
     "DESERIALIZATION_PAYLOAD_REFERENCE",
+    "build_deserialization_parts",
     # Path Traversal / LFI / RFI
     "PATH_TRAVERSAL_TOOLS",
     "PATH_TRAVERSAL_PHP_WRAPPERS",

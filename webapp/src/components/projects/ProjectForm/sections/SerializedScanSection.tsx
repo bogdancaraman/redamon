@@ -91,7 +91,8 @@ export function SerializedScanSection({ data, updateField, onRun }: SerializedSc
             (Jackson/FastJSON), XMLDecoder, XStream, SnakeYAML, PHP, Python pickle, .NET BinaryFormatter /
             ViewState, Ruby Marshal and Hessian. It is passive and in-memory, sends no extra traffic and never
             deserializes anything. Each format a value carries becomes one info-severity candidate, which the
-            agent&apos;s deserialization skill confirms with a non-destructive out-of-band oracle.
+            agent&apos;s deserialization skill confirms with a non-destructive oracle (out-of-band callback,
+            timing or error differential).
           </p>
 
           {enabled && (
@@ -123,7 +124,7 @@ export function SerializedScanSection({ data, updateField, onRun }: SerializedSc
             <p className={`${styles.fieldHint} ${styles.fieldHintCaution}`} role="alert">
               <strong>Half a cycle.</strong> This module only FLAGS candidates (info severity). The agent&apos;s
               built-in <strong>Insecure Deserialization</strong> skill is what CONFIRMS them with the
-              non-destructive out-of-band oracle and promotes the real ones. It is currently OFF, so every hit will
+              non-destructive oracle and promotes the real ones. It is currently OFF, so every hit will
               sit as an unconfirmed lead. Enable it under AI Agent &gt; Attack Skills for the full detect to confirm
               cycle.
             </p>

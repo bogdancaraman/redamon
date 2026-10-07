@@ -393,6 +393,10 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     'DESERIALIZATION_OOB_CALLBACK_ENABLED': True,       # Allow the non-destructive interactsh OOB oracle (URLDNS / pickle-DNS) that confirms a sink deserializes attacker bytes with zero impact
     'DESERIALIZATION_EXEC_GADGETS_ENABLED': False,      # GATED OFF by default: when True, Step 7 delivers a code-execution gadget chain (ysoserial / phpggc / pickle __reduce__). Default confirms with the oracle only.
     'DESERIALIZATION_OOB_PROVIDER': 'oast.fun',         # interactsh-client server for the deserialization OOB oracle. Override when oast.fun is blocked.
+    'DESERIALIZATION_TIMING_ENABLED': True,             # Allow the timing channel; it holds a request open on the target until a timeout
+    'DESERIALIZATION_FIND_SINKS_ENABLED': True,         # PART B: sweep inputs for sinks recon never flagged. Off = confirm recon candidates only
+    'DESERIALIZATION_RUNTIMES': 'java,java_typed,python,php,node,ruby,dotnet',  # Which per-runtime oracle blocks ship in the prompt
+    'DESERIALIZATION_PHAR_ENABLED': False,              # PHAR polyglot sub-section; it uploads a file to the target
 
     # Attack Skill Configuration
     'ATTACK_SKILL_CONFIG': {
@@ -595,6 +599,14 @@ def fetch_agent_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['PATH_TRAVERSAL_PAYLOAD_REFERENCE_ENABLED'] = project.get('pathTraversalPayloadReferenceEnabled', DEFAULT_AGENT_SETTINGS['PATH_TRAVERSAL_PAYLOAD_REFERENCE_ENABLED'])
     settings['PATH_TRAVERSAL_REQUEST_TIMEOUT'] = project.get('pathTraversalRequestTimeout', DEFAULT_AGENT_SETTINGS['PATH_TRAVERSAL_REQUEST_TIMEOUT'])
     settings['PATH_TRAVERSAL_OOB_PROVIDER'] = project.get('pathTraversalOobProvider', DEFAULT_AGENT_SETTINGS['PATH_TRAVERSAL_OOB_PROVIDER'])
+    # Insecure deserialization
+    settings['DESERIALIZATION_OOB_CALLBACK_ENABLED'] = project.get('deserializationOobCallbackEnabled', DEFAULT_AGENT_SETTINGS['DESERIALIZATION_OOB_CALLBACK_ENABLED'])
+    settings['DESERIALIZATION_OOB_PROVIDER'] = project.get('deserializationOobProvider', DEFAULT_AGENT_SETTINGS['DESERIALIZATION_OOB_PROVIDER'])
+    settings['DESERIALIZATION_TIMING_ENABLED'] = project.get('deserializationTimingEnabled', DEFAULT_AGENT_SETTINGS['DESERIALIZATION_TIMING_ENABLED'])
+    settings['DESERIALIZATION_FIND_SINKS_ENABLED'] = project.get('deserializationFindSinksEnabled', DEFAULT_AGENT_SETTINGS['DESERIALIZATION_FIND_SINKS_ENABLED'])
+    settings['DESERIALIZATION_RUNTIMES'] = project.get('deserializationRuntimes', DEFAULT_AGENT_SETTINGS['DESERIALIZATION_RUNTIMES'])
+    settings['DESERIALIZATION_EXEC_GADGETS_ENABLED'] = project.get('deserializationExecGadgetsEnabled', DEFAULT_AGENT_SETTINGS['DESERIALIZATION_EXEC_GADGETS_ENABLED'])
+    settings['DESERIALIZATION_PHAR_ENABLED'] = project.get('deserializationPharEnabled', DEFAULT_AGENT_SETTINGS['DESERIALIZATION_PHAR_ENABLED'])
     settings['ATTACK_SKILL_CONFIG'] = project.get('attackSkillConfig', DEFAULT_AGENT_SETTINGS['ATTACK_SKILL_CONFIG'])
     settings['USER_ATTACK_SKILLS'] = project.get('userAttackSkills', DEFAULT_AGENT_SETTINGS['USER_ATTACK_SKILLS'])
 

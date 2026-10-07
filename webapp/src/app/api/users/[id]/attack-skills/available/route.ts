@@ -35,7 +35,7 @@ const BUILT_IN_SKILLS = [
   {
     id: 'deserialization',
     name: 'Insecure Deserialization',
-    description: 'Confirms recon serialized-object candidates (Java, PHP, Python, .NET, Ruby, polymorphic JSON/XML/YAML, Hessian) with a non-destructive out-of-band oracle, then escalates to a gated gadget chain',
+    description: 'Confirms recon serialized-object candidates (Java, PHP, Python, .NET, Ruby, polymorphic JSON/XML/YAML, Hessian) with a non-destructive oracle (out-of-band callback, timing or error differential), then escalates to a gated gadget chain',
   },
   {
     id: 'path_traversal',

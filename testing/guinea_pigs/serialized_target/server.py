@@ -5,11 +5,15 @@ the agent ``deserialization`` built-in skill. Every endpoint emits ONE family's
 serialization signature on the RESPONSE side (Content-Type, Set-Cookie, or a
 custom response header) because that is the slice the passive recon scanner can
 see in memory (http_probe response headers + resource_enum params). The blobs
-are inert detection fixtures (see payloads.py) -- no gadget. ONE endpoint is a
-real sink on purpose: /python/pickle4 pickle.loads its `session` request cookie
-(_pickle_sink_response), so the agent's out-of-band oracle can confirm it.
+are inert detection fixtures (see payloads.py) -- no gadget. TWO endpoints are
+real sinks on purpose:
+  * /python/pickle4 pickle.loads its `session` request cookie and reports a
+    failure (_pickle_sink_response): the out-of-band and error channels confirm it;
+  * /account/prefs pickle.loads its `prefs` request cookie and answers the same
+    page either way (_blind_pickle_response): blind, so only the out-of-band and
+    timing channels can confirm it.
 
-Stdlib only; runs on port 80. Real code execution through that sink, so never
+Stdlib only; runs on port 80. Real code execution through those sinks, so never
 expose it to an untrusted network (the compose file binds the host alias to
 loopback).
 """
@@ -42,6 +46,9 @@ _PARAM_LINKS = [
     ("/api/state?__VIEWSTATE=" + P.VIEWSTATE.split("=", 1)[1], "GET /api/state?__VIEWSTATE= (ASP.NET viewstate param)"),
 ]
 
+# The blind sink's own cookie: a real protocol-4 pickle of harmless preferences.
+_PREFS_COOKIE = base64.b64encode(pickle.dumps({"theme": "dark", "lang": "en"}, protocol=4)).decode()
+
 
 def _landing() -> bytes:
     rows = []
@@ -51,13 +58,14 @@ def _landing() -> bytes:
     for href, label in _PARAM_LINKS:
         rows.append(f'<li><a href="{href}">{label}</a></li>')
     rows.append('<li><a href="/forms/aspnet">/forms/aspnet</a> &mdash; hidden __VIEWSTATE form</li>')
+    rows.append('<li><a href="/account/prefs">/account/prefs</a> &mdash; user preferences</li>')
     items = "\n".join(rows)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Serialized Object Showroom</title></head>
 <body>
 <h1>Serialized Object Showroom (guinea pig)</h1>
 <p>Each link exposes one serialized-object family signature on the response side
-for RedAmon recon to flag. These are inert detection fixtures, not exploits.</p>
+for RedAmon recon to flag.</p>
 <ul>
 {items}
 </ul>
@@ -114,12 +122,7 @@ class Handler(BaseHTTPRequestHandler):
             the B3 error-differential channel.
         Guinea-pig lab on an isolated Docker network only.
         """
-        sess = None
-        for part in (self.headers.get("Cookie", "") or "").split(";"):
-            part = part.strip()
-            if part.startswith("session="):
-                sess = part[len("session="):]
-                break
+        sess = self._cookie("session")
         if sess:
             try:
                 pickle.loads(base64.b64decode(sess, validate=False))  # noqa: S301
@@ -138,10 +141,41 @@ class Handler(BaseHTTPRequestHandler):
             _BY_PATH["/python/pickle4"],
         )
 
+    def _cookie(self, name: str) -> str | None:
+        for part in (self.headers.get("Cookie", "") or "").split(";"):
+            part = part.strip()
+            if part.startswith(name + "="):
+                return part[len(name) + 1:]
+        return None
+
+    def _blind_pickle_response(self):
+        """INTENTIONALLY VULNERABLE blind sink for the timing-channel test.
+
+        /account/prefs pickle.loads its ``prefs`` request cookie but answers the
+        same page whether loading succeeds or fails, so the error channel shows
+        nothing: only a timing or out-of-band oracle can prove it deserializes.
+        """
+        prefs = self._cookie("prefs")
+        if prefs:
+            try:
+                pickle.loads(base64.b64decode(prefs, validate=False))  # noqa: S301
+            except Exception:  # noqa: BLE001, S110 - blind on purpose
+                pass
+        body = b"<html><body><h2>Preferences</h2><p>Your preferences are saved.</p></body></html>"
+        self.send_response(200)
+        self.send_header("Set-Cookie", f"prefs={_PREFS_COOKIE}; Path=/; HttpOnly")
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/python/pickle4":
             return self._pickle_sink_response()
+        if path == "/account/prefs":
+            return self._blind_pickle_response()
         if path in ("/", "/index.html"):
             return self._send(_landing(), [])
         if path == "/forms/aspnet":

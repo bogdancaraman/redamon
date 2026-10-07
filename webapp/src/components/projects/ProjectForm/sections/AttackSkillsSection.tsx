@@ -16,6 +16,7 @@ import { SqliSection } from './SqliSection'
 import { SsrfSection } from './SsrfSection'
 import { RceSection } from './RceSection'
 import { PathTraversalSection } from './PathTraversalSection'
+import { DeserializationSection } from './DeserializationSection'
 import styles from '../ProjectForm.module.css'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -73,7 +74,7 @@ const BUILT_IN_SKILLS: BuiltInSkillDef[] = [
   {
     id: 'deserialization',
     name: 'Insecure Deserialization',
-    description: 'Confirms recon serialized-object candidates (Java, PHP, Python, .NET, Ruby, polymorphic JSON/XML/YAML, Hessian) with a non-destructive out-of-band oracle, then escalates to a gated gadget chain (ysoserial / phpggc). Reuses recon candidates first; exec gadgets off by default.',
+    description: 'Confirms recon serialized-object candidates (Java, PHP, Python, .NET, Ruby, polymorphic JSON/XML/YAML, Hessian) with a non-destructive oracle (out-of-band callback, timing or error differential), then escalates to a gated gadget chain (ysoserial / phpggc). Reuses recon candidates first; exec gadgets off by default.',
     icon: <Binary size={16} />,
   },
   {
@@ -377,6 +378,9 @@ export function AttackSkillsSection({ data, updateField }: AttackSkillsSectionPr
                   )}
                   {enabled && skill.id === 'path_traversal' && (
                     <PathTraversalSection data={data} updateField={updateField} />
+                  )}
+                  {enabled && skill.id === 'deserialization' && (
+                    <DeserializationSection data={data} updateField={updateField} />
                   )}
                 </div>
               )

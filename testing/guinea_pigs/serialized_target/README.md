@@ -33,12 +33,19 @@ The blobs are **inert detection fixtures** -- byte prefixes and structural
 markers only, no gadget, no class graph. `validate_jev_e2e.py` (below) checks that
 a default live recon run flags every family it can see.
 
-**One real sink, on purpose.** `/python/pickle4` runs `pickle.loads` on its
-`session` *request* cookie, so the agent's `deserialization` skill has something to
-confirm: its non-destructive DNS oracle really fires (interactsh callback), and a
-corrupt blob returns `500` with an `X-Deser-Error` header (the error-differential
-channel). A cookieless request, such as recon's probe, takes the normal path and
-still gets the detection `Set-Cookie`.
+**Two real sinks, on purpose**, so every confirmation channel of the agent's
+`deserialization` skill has something to prove:
+
+| Sink | Cookie | On a failed load | Channels that can confirm it |
+| --- | --- | --- | --- |
+| `/python/pickle4` | `session` | `500` + `X-Deser-Error` header | out-of-band, error differential (and timing) |
+| `/account/prefs` | `prefs` | the same `200` page | out-of-band, timing only (blind) |
+
+The non-destructive DNS oracle really fires on both (interactsh callback). The blind
+sink exists for the timing channel: with the OOB callback off, a pickle that connects
+to an unroutable address (`192.0.2.1`) delays the identical `200` by its timeout,
+while valid and corrupt cookies answer at once. A cookieless request, such as
+recon's probe, takes the normal path and still gets the sink's `Set-Cookie`.
 
 ## End-to-end case test (with the Jev ranking)
 
@@ -73,6 +80,7 @@ Fixed IP `172.25.0.92` on the external `redamon-network` (survives restarts;
 scan containers run `--net=host` and cannot resolve container names, so pin the
 project to the **IP**, port 80). Host alias `localhost:9092` for manual curl.
 
-> Intentionally vulnerable: `/python/pickle4` is real code execution. Local/trusted
+> Intentionally vulnerable: `/python/pickle4` and `/account/prefs` are real code
+> execution. Local/trusted
 > Docker host only. The compose file binds the `9092` alias to `127.0.0.1`; never
 > publish it on another interface.
