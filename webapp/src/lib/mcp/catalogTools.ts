@@ -161,10 +161,11 @@ const NOTES = [
     'They have no LLM engine, aiInPipeline does not set or reset them, and switching one ON is ' +
     'refused unless the project owner has a Jev token. Page types, base paths and seed order take ' +
     'effect from Jev\'s answers (page-type labels land on the Endpoint, FFuf fuzzes Jev\'s ' +
-    'directories, Hakrawler crawls Jev\'s host order); the tool-health check records its verdict in ' +
-    'the recon output, and the serialized-scan ranking (needs serializedScanEnabled too) runs in ' +
-    'shadow: Jev is asked about each flagged blob and its agreement is recorded in the recon output ' +
-    'under jev_shadow.serialized_assess, while the candidates stay as the signatures flagged them.',
+    'directories, Hakrawler crawls Jev\'s host order, and each serialized-object candidate gets ' +
+    'Jev\'s deser_jev_format and deser_jev_exploitability, the order the deserialization skill ' +
+    'confirms them in; that ranking needs serializedScanEnabled too). The tool-health check records ' +
+    'its verdict in the recon output. Without a token, or when Jev cannot answer, each step runs ' +
+    'exactly as it does without AI.',
 ]
 
 /**

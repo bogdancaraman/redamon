@@ -84,6 +84,13 @@ export const VOLATILE_PROPERTIES = new Set([
   // Jev's confidence in a page's label drifts between scans of an unchanged
   // page; a change of the label itself (page_class) still counts.
   'page_class_confidence',
+  // Jev's assessment of a serialized-object candidate is an opinion recomputed
+  // every run, and absent on a run without Jev: neither drift nor switching Jev
+  // on or off changes the target. Its own state, deser_format, still counts.
+  'deser_jev_format',
+  'deser_jev_format_confidence',
+  'deser_jev_exploitability',
+  'deser_jev_source',
 ])
 
 function stableString(value: unknown): string {

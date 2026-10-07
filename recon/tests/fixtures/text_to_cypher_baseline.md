@@ -538,11 +538,15 @@ Serialized-object detection properties (source="serialized_scan"):
 - deser_language (string): "java", "php", "python", "dotnet", "ruby"
 - deser_format (string): the family — "native_java", "jackson_json", "fastjson", "xmldecoder", "xstream", "snakeyaml", "php_serialize", "phar", "python_pickle", "dotnet_binaryformatter", "viewstate", "ruby_marshal", "hessian"
 - deser_transport (string): where the blob rides — "cookie", "param", "header"
-- deser_location (string): the cookie/param/header name (attacker-named; treated as data)
+- deser_location (string): the cookie's, parameter's or header's own name (attacker-named; treated as data)
 - deser_encoding_layers (list): decode layers peeled to reach the blob (e.g. ["base64","gzip"]); a trailing "truncated" marks a depth/size cap hit by the bomb-safe decoder
 - deser_magic (string): the matched signature marker
 - evidence_snippet (string): printable-ASCII, hex-escaped, <=120 chars (render-safe; never raw decoded bytes)
 - confidence (float, 0-1): this detector's belief that serialization is present
+- deser_jev_format (string): TypeSafe Jev's own reading of the blob's format, one of the deser_format values or "none" (not a serialized object); absent when the run did not ask Jev or Jev gave no answer for the blob
+- deser_jev_format_confidence (integer, 0-100): Jev's confidence in deser_jev_format
+- deser_jev_exploitability (integer, 0-100): Jev's estimate that the blob reaches a server-side deserializer from attacker input; the deserialization skill confirms the highest first
+- deser_jev_source (string): "jev_classifier" when Jev wrote the three fields above
 
 GVM-specific properties (source="gvm"):
 - oid (string): OpenVAS NVT OID
@@ -642,7 +646,7 @@ Per-source properties node filters also read (graph_db/node_filters/catalog.yaml
 - fixed_version
 - package_version
 - remediated_at
-- Typical query: "list serialized-object candidates awaiting confirmation" → `MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v:Vulnerability {source:'serialized_scan'}) WHERE v.needs_agent_confirmation = true AND NOT (:ChainFinding)-[:CONFIRMS]->(v) RETURN e.url, v.id, v.deser_format, v.deser_location`
+- Typical query: "list serialized-object candidates awaiting confirmation, most reachable first" → `MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v:Vulnerability {source:'serialized_scan'}) WHERE v.needs_agent_confirmation = true AND NOT (:ChainFinding)-[:CONFIRMS]->(v) RETURN e.url, v.id, v.deser_format, v.deser_location, v.deser_jev_exploitability ORDER BY CASE v.deser_jev_format WHEN 'none' THEN -1 ELSE coalesce(v.deser_jev_exploitability, -1) END DESC, v.id`
 - id pattern: `graphql_{vulnerability_type}_{baseurl}_{path}` (deterministic, MERGE-safe across re-scans)
 - Typical query: "find endpoints exposing GraphQL introspection" → `MATCH (e:Endpoint {is_graphql: true, graphql_introspection_enabled: true})-[:HAS_VULNERABILITY]->(v:Vulnerability) WHERE v.source IN ['graphql_scan', 'graphql_cop'] RETURN e.url, v.vulnerability_type, v.severity`
 graphql-cop properties (source="graphql_cop" -- external Docker scanner, Phase 2):

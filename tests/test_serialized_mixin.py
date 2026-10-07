@@ -155,6 +155,24 @@ class TestSerializedGraphWriter(unittest.TestCase):
         h, _ = self._run([_finding(), _finding(deser_format="php_serialize")])
         self.assertEqual(len({params["vuln_id"] for _, params in h.driver.calls}), 2)
 
+    def test_jev_assessment_is_persisted_when_jev_answered(self):
+        jev = {"deser_jev_format": "native_java", "deser_jev_format_confidence": 99,
+               "deser_jev_exploitability": 80, "deser_jev_source": "jev_classifier"}
+        h, _ = self._run([_finding(**jev)])
+        _, params = h.driver.calls[0]
+        self.assertEqual(params["jev_props"], jev)
+        self.assertTrue(all(_is_flat(v) for v in params["jev_props"].values()))
+
+    def test_a_run_without_a_jev_answer_clears_an_earlier_one(self):
+        # Jev off, out of credit or unable to answer this blob: the node must not
+        # keep the previous run's score, or the agent would rank on a stale one.
+        h, _ = self._run([_finding()])
+        query, params = h.driver.calls[0]
+        self.assertEqual(params["jev_props"], {})
+        self.assertRegex(query, r"SET v \+= \$props,\s+v\.updated_at = datetime\(\)\s+"
+                                r"REMOVE v\.deser_jev_format, v\.deser_jev_format_confidence,\s+"
+                                r"v\.deser_jev_exploitability, v\.deser_jev_source\s+SET v \+= \$jev_props")
+
     def test_candidate_written_even_without_endpoint(self):
         # OPTIONAL MATCH means the node is MERGEd regardless of anchor presence;
         # the fake session always "finds" nothing, yet the write still runs.

@@ -27,12 +27,21 @@ Properties written on each Vulnerability:
     evidence_snippet          printable-ASCII, <=120 chars (render-safe)
     name, description         human-readable
     matched_at, host          locator for the UI/report
+    deser_jev_format, deser_jev_format_confidence, deser_jev_exploitability,
+    deser_jev_source          TypeSafe Jev's assessment, only from a run that
+                              asked Jev and got an answer for this blob
 """
 
 from __future__ import annotations
 
 import hashlib
 from urllib.parse import urlparse
+
+#: Jev's assessment (recon/helpers/ai_planner/serialized_assess.py). Each run
+#: replaces them: a run without Jev, or one where Jev could not answer for this
+#: blob, clears them, so a node never keeps a stale score from an earlier run.
+_JEV_PROPS = ("deser_jev_format", "deser_jev_format_confidence",
+              "deser_jev_exploitability", "deser_jev_source")
 
 
 class SerializedScanMixin:
@@ -96,6 +105,7 @@ class SerializedScanMixin:
                     # (takeover_mixin pattern). created_at stays ON CREATE only;
                     # no triage_*/muted/stale_since here.
                     props = {k: v for k, v in props.items() if v is not None}
+                    jev_props = {k: finding[k] for k in _JEV_PROPS if finding.get(k) is not None}
 
                     session.run(
                         """
@@ -105,6 +115,9 @@ class SerializedScanMixin:
                                         v.created_at = datetime()
                         SET v += $props,
                             v.updated_at = datetime()
+                        REMOVE v.deser_jev_format, v.deser_jev_format_confidence,
+                               v.deser_jev_exploitability, v.deser_jev_source
+                        SET v += $jev_props
                         WITH v
                         OPTIONAL MATCH (e:Endpoint {path: $path, method: $method,
                                                     baseurl: $baseurl,
@@ -119,8 +132,8 @@ class SerializedScanMixin:
                         FOREACH (_ IN CASE WHEN bu IS NULL THEN [] ELSE [1] END |
                           MERGE (bu)-[:HAS_VULNERABILITY]->(v))
                         """,
-                        vuln_id=vuln_id, props=props, path=path, method=method,
-                        baseurl=baseurl, user_id=user_id, project_id=project_id,
+                        vuln_id=vuln_id, props=props, jev_props=jev_props, path=path,
+                        method=method, baseurl=baseurl, user_id=user_id, project_id=project_id,
                     )
                     stats["vulnerabilities_created"] += 1
 

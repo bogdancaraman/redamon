@@ -15,8 +15,8 @@ Jev's answer lands in separate `deser_jev_*` fields instead.
 
 Jev is sent evidence only: the snippet, transport, location and encoding layers.
 Never the format the signatures matched, and never their marker label for it
-(`deser_magic`, e.g. "04 08 (Ruby Marshal)"), which names the format: the
-agreement shadow mode records would only measure Jev reading the label back.
+(`deser_magic`, e.g. "04 08 (Ruby Marshal)"), which names the format: Jev would
+only read the label back, and its format would never be a second opinion.
 
 Candidates whose Jev-visible fields are identical collapse to one question set,
 so a session cookie that rides on every endpoint is asked about once; a failed
@@ -25,12 +25,13 @@ are bounded per scan (MAX_BLOBS_PER_SCAN) and the whole pass by a wall-clock
 budget, request-side blobs first.
 
 Kind B (no LLM twin), gated by AI_IN_PIPELINE and SERIALIZED_SCAN_JEV_RANK at the
-call site. ROLLOUT is SHADOW: Jev is asked every run and each decision is
-recorded next to the deterministic format (recon JSON
-`jev_shadow.serialized_assess`), while the candidates stay exactly as the
-signatures produced them. ACT adds the `deser_jev_*` annotations and orders the
-candidates by reachability; persisting those annotations to the graph lands with
-the ACT flip, which is a separate change made after reviewing the agreement data.
+call site. ROLLOUT is ACT: each answered candidate gets the `deser_jev_*`
+annotations, which the graph writer persists, and the list is ordered by
+reachability, the order the agent's deserialization skill confirms them in. A
+blob Jev could not answer keeps no annotation and follows the answered ones, so
+with Jev off, out of credit or down the scan is exactly the deterministic one.
+Every decision is also recorded next to the signatures' format (recon JSON
+`jev_shadow.serialized_assess`, and `jev-shadow` drawer lines).
 
 Log lines carry counts and indexes only. The recon drawer moves to whichever
 phase a stdout line names (`port.*scan` among them), and `transport` contains
@@ -42,10 +43,10 @@ import os
 import time
 from typing import Dict, List, Optional, Tuple
 
-from recon.helpers.ai_planner.jev_shadow import ACT, SHADOW, ShadowRecorder, jev_model, jev_post
+from recon.helpers.ai_planner.jev_shadow import ACT, ShadowRecorder, jev_model, jev_post
 from recon.serialized_scan.normalizers import safe_snippet
 
-ROLLOUT = SHADOW
+ROLLOUT = ACT
 
 HOOK = "serialized_assess"
 _TAG = "Serialized-Jev"
@@ -147,11 +148,12 @@ def run_serialized_assess_pass(findings: List[dict], *, user_id: str, project_id
                                recon_data: Optional[dict] = None, clock=time.monotonic) -> dict:
     """Assess the flagged candidates. Never raises. Returns a count summary.
 
-    `findings` is the scan's candidate list, mutated in place in ACT only: each
-    answered candidate gets `deser_jev_format`, `deser_jev_format_confidence`,
-    `deser_jev_exploitability` and `deser_jev_source`, and the list is re-ordered
-    by reachability (answered first, the rest after in their original order). In
-    SHADOW nothing on the candidates or their order changes.
+    `findings` is the scan's candidate list, mutated in place under ACT (the
+    shipped rollout): each answered candidate gets `deser_jev_format`,
+    `deser_jev_format_confidence`, `deser_jev_exploitability` and
+    `deser_jev_source`, and the list is re-ordered by reachability (answered
+    first, the rest after in their original order). Under SHADOW nothing on the
+    candidates or their order changes.
     """
     recorder = ShadowRecorder(HOOK, rollout=ROLLOUT)
     stats = {"candidates": 0, "asked": 0, "assessed": 0, "not_asked": 0,

@@ -144,7 +144,15 @@ class TestPromptTemplate(unittest.TestCase):
         out = self._fmt()
         self.assertIn("serialized_scan", out)
         self.assertIn("needs_agent_confirmation", out)
-        self.assertIn("ORDER BY v.id", out)
+
+    def test_step1_confirms_the_most_reachable_first_with_a_deterministic_tiebreak(self):
+        # Jev's reachability orders the read; a "none" answer and an unranked
+        # candidate sort last, and v.id keeps the order stable for paging.
+        out = self._fmt()
+        self.assertIn("v.deser_jev_exploitability AS jev_reach", out)
+        self.assertIn("v.deser_jev_format AS jev_fmt", out)
+        self.assertIn("ORDER BY CASE v.deser_jev_format WHEN 'none' THEN -1 "
+                      "ELSE coalesce(v.deser_jev_exploitability, -1) END DESC, v.id", out)
 
     def test_step5_requires_both_proof_type_and_candidate_id(self):
         out = self._fmt()

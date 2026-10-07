@@ -60,10 +60,12 @@ that every family in `live_in_memory_formats` is a `serialized_scan` candidate i
 graph (the others ride only in a deeper endpoint's response header or `Set-Cookie`,
 which the in-memory corpus never holds, so they are reported as a known gap; see
 `expected_results.yaml`), that no sink is flagged twice for one format, that the recon
-output holds `jev_shadow.serialized_assess` (shadow rollout,
-model `jev-1.13.0`, decisions, no fallback, closed-set answers), and that shadow left
-the candidates unannotated. It prints Jev's agreement with the signatures per
-format without asserting it: measuring that is what shadow mode is for.
+output holds `jev_shadow.serialized_assess` (act rollout, model `jev-1.13.0`,
+decisions, no fallback, closed-set answers), that every candidate in the graph carries
+Jev's `deser_jev_*` annotation, and that the deserialization skill's own candidate
+query returns them most reachable first. It prints Jev's agreement with the
+signatures per format without asserting it: Jev's format is a second opinion, not a
+test oracle.
 
 ## Wiring
 

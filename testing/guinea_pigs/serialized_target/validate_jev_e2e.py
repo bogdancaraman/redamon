@@ -19,16 +19,18 @@ outside the in-memory corpus: they are reported as a known gap, and finding one
 fails until that list is updated); no sink is flagged twice for one format (base64
 Java matches as rO0AB text and as decoded AC ED 00 05 bytes, and must stay one
 candidate); the recon output records Jev's assessment under
-jev_shadow.serialized_assess (rollout shadow, model jev-1.13.0, at least one decision,
-no fallback, every answer from the closed set); and shadow changed nothing: no
-candidate carries a deser_jev_* annotation. Jev's agreement with the signatures is
-printed, not asserted: measuring it is what shadow mode is for.
+jev_shadow.serialized_assess (rollout act, model jev-1.13.0, at least one decision,
+no fallback, every answer from the closed set); every candidate in the graph carries
+Jev's deser_jev_* annotation; and the deserialization skill's own candidate query
+returns them most reachable first. Jev's agreement with the signatures is printed,
+not asserted: Jev's format is a second opinion, not a test oracle.
 
 Exit 0 only when every assertion holds. The MCP token is read from the repo .env and
 never printed.
 """
 import json
 import os
+import re
 import sys
 import time
 
@@ -38,6 +40,7 @@ import mcp_client as mcp  # noqa: E402
 
 TARGET = "172.25.0.92"
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+PROMPT = os.path.join(REPO, "agentic", "prompts", "deserialization_prompts.py")
 CLOSED_SET = {"native_java", "jackson_json", "fastjson", "xmldecoder", "xstream", "snakeyaml",
               "hessian", "php_serialize", "phar", "python_pickle", "dotnet_binaryformatter",
               "viewstate", "ruby_marshal", "none"}
@@ -108,7 +111,8 @@ def setup():
     text = json.dumps(catalog)
     check("describe_recon_settings lists serializedScanJevRank", not err and '"serializedScanJevRank"' in text)
     notes = json.dumps(find_key(catalog, "notes") or [])
-    check("its notes explain the Jev-only ranking", "serializedScanJevRank" in notes and "shadow" in notes)
+    check("its notes explain the Jev-only ranking",
+          "serializedScanJevRank" in notes and "deser_jev_exploitability" in notes)
 
     created, err = mcp.call("create_project", {
         "name": "serialized-jev-e2e (temp)",
@@ -179,7 +183,23 @@ def verify(pid):
             check(f"UNEXPECTED candidate for {fmt}: move it to live_in_memory_formats", False,
                   f"n={found[fmt].get('n')}")
     known_gap = [fmt for fmt in gaps if fmt not in found]
-    check("shadow wrote no deser_jev_* annotation", not err and all(r.get("annotated", 0) == 0 for r in rows))
+    check("every candidate carries Jev's deser_jev_* annotation",
+          not err and rows and all(r.get("annotated") == r.get("n") for r in rows),
+          ", ".join(f"{r.get('fmt')} {r.get('annotated')}/{r.get('n')}" for r in rows))
+
+    # The deserialization skill's own step-1 order, read from its prompt so the two
+    # cannot drift: most reachable first, a "none" answer and an unranked one last.
+    order = re.search(r"ORDER BY (CASE v\.deser_jev_format .*? END DESC, v\.id)",
+                      open(PROMPT).read()).group(1)
+    ranked_out, ranked_err = mcp.call("query_graph", {"projectId": pid, "cypher": (
+        "MATCH (v:Vulnerability {source:'serialized_scan'}) WHERE v.needs_agent_confirmation = true "
+        "AND NOT (:ChainFinding)-[:CONFIRMS]->(v) RETURN v.deser_jev_format AS jev_fmt, "
+        f"v.deser_jev_exploitability AS jev_reach ORDER BY {order}")})
+    ranked = find_key(ranked_out, "records") or []
+    keys = [-1 if r.get("jev_fmt") == "none" else (r.get("jev_reach") if r.get("jev_reach") is not None else -1)
+            for r in ranked]
+    check("the agent reads the candidates most reachable first",
+          not ranked_err and ranked and keys == sorted(keys, reverse=True), f"reach order {keys}")
 
     twins_out, twins_err = mcp.call("query_graph", {"projectId": pid, "cypher": (
         "MATCH (v:Vulnerability) WHERE v.source = 'serialized_scan' "
@@ -200,7 +220,7 @@ def verify(pid):
     if isinstance(shadow, dict):
         summary = shadow.get("summary") or {}
         records = shadow.get("records") or []
-        check("rollout is shadow", shadow.get("rollout") == "shadow")
+        check("rollout is act", shadow.get("rollout") == "act")
         check("answered by the pinned model", shadow.get("model") == "jev-1.13.0", f"model={shadow.get('model')}")
         check("Jev made at least one decision", summary.get("decisions", 0) > 0, f"decisions={summary.get('decisions')}")
         check("no call fell back", summary.get("fallbacks") == 0, f"fallbacks={summary.get('fallbacks')}")

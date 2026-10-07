@@ -100,12 +100,11 @@ export function SerializedScanSection({ data, updateField, onRun }: SerializedSc
               label="Rank candidates with Jev"
               tooltip={
                 'Jev is asked, per distinct flagged blob, which serialization format it is and how ' +
-                'likely it is to be an attacker-reachable sink, to rank the candidates for the ' +
-                "agent's confirmation. Annotates and ranks only: it never drops a candidate or changes " +
-                'the format the signatures matched. Ships in shadow mode: Jev is asked and its ' +
-                'agreement is recorded in the recon output, while the candidates stay as the ' +
-                'signatures flagged them. Needs Serialized Object Scan on. Same switch as in the ' +
-                'Target tab AI panel. ' +
+                'likely it is to be an attacker-reachable sink. Both land on the candidate, and the ' +
+                "agent's deserialization skill confirms the most reachable first. It never drops a " +
+                'candidate or changes the format the signatures matched; without a Jev token, or for ' +
+                'a blob Jev cannot answer, the candidates stay exactly as the signatures flagged ' +
+                'them. Same switch as in the Target tab AI panel. ' +
                 (!data.aiInPipeline ? 'Enable "AI in Pipeline" in the Target tab to use this.' : '')
               }
             />

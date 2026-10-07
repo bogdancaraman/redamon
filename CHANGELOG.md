@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.25.2] - 2026-10-07
+
+### Changed
+
+- **The serialized-object Jev ranking now acts instead of only observing.** With AI in Pipeline, `serializedScanJevRank` and a Jev token on, Jev's reading of each flagged blob is written onto the candidate (`deser_jev_format`, `deser_jev_format_confidence`, `deser_jev_exploitability`) and the Insecure Deserialization skill confirms the most reachable candidates first. Without a token, or for a blob Jev cannot answer, the candidates are exactly the signatures' ones; it never drops a candidate or rewrites the matched format.
+- **Mute rules can filter serialized candidates on Jev's format and reachability**, and the Recon Delta ignores Jev's fields, so switching Jev on or off never reads as a change.
+
 ## [6.25.1] - 2026-10-07
 
 ### Fixed

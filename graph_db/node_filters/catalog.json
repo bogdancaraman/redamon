@@ -1343,6 +1343,32 @@
           "type": "number",
           "prop": "confidence",
           "label": "Confidence (0-1)"
+        },
+        "deser_jev_format": {
+          "type": "enum",
+          "prop": "deser_jev_format",
+          "label": "Jev format",
+          "values": [
+            "native_java",
+            "jackson_json",
+            "fastjson",
+            "xmldecoder",
+            "xstream",
+            "snakeyaml",
+            "php_serialize",
+            "phar",
+            "python_pickle",
+            "dotnet_binaryformatter",
+            "viewstate",
+            "ruby_marshal",
+            "hessian",
+            "none"
+          ]
+        },
+        "deser_jev_exploitability": {
+          "type": "number",
+          "prop": "deser_jev_exploitability",
+          "label": "Jev reachability (0-100)"
         }
       },
       "overlaps": [],
@@ -1353,6 +1379,18 @@
             {
               "field": "needs_agent_confirmation",
               "op": "is_true"
+            }
+          ]
+        },
+        {
+          "name": "Jev reads as not a serialized object",
+          "all": [
+            {
+              "field": "deser_jev_format",
+              "op": "in",
+              "value": [
+                "none"
+              ]
             }
           ]
         }

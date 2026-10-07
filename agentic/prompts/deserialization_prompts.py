@@ -80,11 +80,19 @@ it in reverse to your oracle) and evidence_snippet (the bytes recon saw).
 query_graph imposes no server-side LIMIT, so order and page it; never issue a
 bare unordered read.
 ```
-query_graph({{"query": "MATCH (v:Vulnerability {{source:'serialized_scan'}}) WHERE v.needs_agent_confirmation = true AND NOT (:ChainFinding)-[:CONFIRMS]->(v) OPTIONAL MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v) RETURN v.id AS id, v.deser_format AS fmt, v.deser_language AS lang, v.deser_transport AS transport, v.deser_location AS location, v.deser_magic AS magic, v.deser_encoding_layers AS layers, v.evidence_snippet AS snippet, v.matched_at AS url, e.method AS method ORDER BY v.id LIMIT 200"}})
+query_graph({{"query": "MATCH (v:Vulnerability {{source:'serialized_scan'}}) WHERE v.needs_agent_confirmation = true AND NOT (:ChainFinding)-[:CONFIRMS]->(v) OPTIONAL MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v) RETURN v.id AS id, v.deser_format AS fmt, v.deser_language AS lang, v.deser_transport AS transport, v.deser_location AS location, v.deser_magic AS magic, v.deser_encoding_layers AS layers, v.evidence_snippet AS snippet, v.matched_at AS url, e.method AS method, v.deser_jev_format AS jev_fmt, v.deser_jev_exploitability AS jev_reach ORDER BY CASE v.deser_jev_format WHEN 'none' THEN -1 ELSE coalesce(v.deser_jev_exploitability, -1) END DESC, v.id LIMIT 200"}})
 ```
-Page with an added `AND v.id > '<last_id>'` when a count shows more than 200. Use
+Page with an added `SKIP 200` (then 400, ...) when a count shows more than 200. Use
 graph_summary to tell "unscanned" (no candidates because the scan never ran, go
 to PART B) from "clean" (it ran and found nothing, PART B widens the search).
+
+Work the list in the order it comes back. When the project ranks candidates with
+TypeSafe Jev, jev_reach (0-100) is Jev's estimate that the blob reaches a
+deserializer from attacker input, and the most reachable come first. jev_fmt is
+Jev's own reading of the format, made without seeing fmt: when the two disagree,
+or jev_fmt is "none", let evidence_snippet and the captured request decide which
+format to build the oracle for. Both are null when the scan did not ask Jev; the
+order is then by id.
 
 Note on the locators: the HTTP method is NOT a property of the candidate node; it
 lives on the linked Endpoint, which is why the query reads `e.method`. If a

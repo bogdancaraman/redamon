@@ -173,6 +173,22 @@ describe('computeReconDelta', () => {
     expect(VOLATILE_PROPERTIES.has('last_seen')).toBe(true)
   })
 
+  test("Jev's assessment of a serialized candidate never registers as a change", () => {
+    // Switching Jev off between scans drops the fields; a score drifts between
+    // scans of an unchanged blob. The candidate's own format still counts.
+    const base = { source: 'serialized_scan', matched_at: 'https://x.tld/api', deser_location: 'data',
+                   deser_format: 'native_java' }
+    const jev = { deser_jev_format: 'native_java', deser_jev_format_confidence: 99,
+                  deser_jev_exploitability: 80, deser_jev_source: 'jev_classifier' }
+    const withJev = graph([node('1', 'Vulnerability', { ...base, ...jev })])
+    const withoutJev = graph([node('2', 'Vulnerability', base)])
+    const drifted = graph([node('3', 'Vulnerability', { ...base, ...jev, deser_jev_exploitability: 64 })])
+    expect(computeReconDelta(withJev, withoutJev).totals).toMatchObject({ changed: 0, stable: 1 })
+    expect(computeReconDelta(withJev, drifted).totals).toMatchObject({ changed: 0, stable: 1 })
+    const reformatted = graph([node('4', 'Vulnerability', { ...base, deser_format: 'jackson_json' })])
+    expect(computeReconDelta(withoutJev, reformatted).totals.stable).toBe(0)
+  })
+
   test('an empty base means everything is new (first comparison)', () => {
     const d = computeReconDelta(graph([]), after)
     expect(d.totals.added).toBe(7)

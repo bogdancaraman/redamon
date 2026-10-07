@@ -329,10 +329,21 @@ kinds:
       deser_magic:     { type: text, prop: deser_magic, label: Marker }
       needs_agent_confirmation: { type: bool, prop: needs_agent_confirmation, label: Awaiting agent confirmation }
       confidence:      { type: number, prop: confidence, label: Confidence (0-1) }
+      deser_jev_format:
+        type: enum
+        prop: deser_jev_format
+        label: Jev format
+        values: [native_java, jackson_json, fastjson, xmldecoder, xstream, snakeyaml,
+                 php_serialize, phar, python_pickle, dotnet_binaryformatter, viewstate,
+                 ruby_marshal, hessian, none]
+      deser_jev_exploitability: { type: number, prop: deser_jev_exploitability, label: Jev reachability (0-100) }
     examples:
       - name: Candidates awaiting confirmation
         all:
           - { field: needs_agent_confirmation, op: is_true }
+      - name: Jev reads as not a serialized object
+        all:
+          - { field: deser_jev_format, op: in, value: [none] }
     notes:
       - >-
         Select on source alone, never needs_agent_confirmation: a pending

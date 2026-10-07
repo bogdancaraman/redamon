@@ -10,9 +10,10 @@ What it locks in:
   family cannot reach Jev unannounced;
 - per-scan cap and wall-clock budget; a failed batch is a fallback, never a crash,
   never re-asked; a malformed answer is a fallback;
-- SHADOW (the shipped rollout) changes nothing on the candidates or their order and
-  records Jev's answer next to the signature's format; ACT annotates and ranks,
-  never drops a candidate and never rewrites deser_format (part of the graph id);
+- ACT (the shipped rollout) annotates each answered candidate and orders them by
+  reachability, never drops one and never rewrites deser_format (part of the graph
+  id); with Jev off or failing the candidates are exactly the deterministic ones;
+  SHADOW, still selectable, only records Jev's answer next to the signature's format;
 - stdout carries counts and indexes only, so no line can move the recon drawer;
 - the hook sits in run_serialized_scan, the entry the full pipeline and partial
   recon share, before the result is built.
@@ -139,11 +140,12 @@ def test_the_closed_set_is_exactly_what_the_detector_can_emit():
 # The pass
 # ---------------------------------------------------------------------------
 
-def test_the_shipped_rollout_is_shadow():
-    assert sa.ROLLOUT == jev_shadow.SHADOW
+def test_the_shipped_rollout_is_act():
+    assert sa.ROLLOUT == jev_shadow.ACT
 
 
-def test_shadow_records_and_leaves_the_candidates_alone(capsys):
+def test_shadow_records_and_leaves_the_candidates_alone(monkeypatch, capsys):
+    monkeypatch.setattr(sa, "ROLLOUT", jev_shadow.SHADOW)
     findings = [_finding(i) for i in range(3)]
     before = [dict(f) for f in findings]
     data = {}
@@ -345,9 +347,9 @@ def test_partial_recon_reaches_the_hook_through_the_same_entry():
     assert "run_serialized_scan(recon_data, settings)" in source
 
 
-def test_end_to_end_through_the_scanner_in_shadow(monkeypatch):
-    """A real scan of a Java Set-Cookie: the hook asks Jev, records the decision in the
-    recon output, and leaves the candidate exactly as the signatures produced it."""
+def test_end_to_end_through_the_scanner_annotates_the_candidates(monkeypatch):
+    """A real scan of a Java Set-Cookie: the hook asks Jev, writes its answer onto the
+    candidate the graph writer persists, and records the decision in the recon output."""
     from recon.serialized_scan.scanner import run_serialized_scan
     monkeypatch.setenv("USER_ID", "owner-1")
     monkeypatch.setenv("PROJECT_ID", "proj-1")
@@ -358,12 +360,29 @@ def test_end_to_end_through_the_scanner_in_shadow(monkeypatch):
     with mock.patch.object(jev_shadow.requests, "post", side_effect=post):
         run_serialized_scan(corpus, settings)
     findings = corpus["serialized_scan"]["findings"]
-    assert findings and all(f["deser_format"] == "native_java" for f in findings)
-    assert all("deser_jev_format" not in f for f in findings)        # shadow writes nothing
+    assert findings and all(f["deser_format"] == "native_java" for f in findings)   # never rewritten
+    assert all((f["deser_jev_format"], f["deser_jev_format_confidence"], f["deser_jev_exploitability"],
+                f["deser_jev_source"]) == ("native_java", 88, 77, "jev_classifier") for f in findings)
     assert calls and calls[0]["user_id"] == "owner-1"
-    shadow = corpus["jev_shadow"]["serialized_assess"]
-    assert shadow["summary"]["decisions"] == len(findings)
-    assert all(r["jev"] == "native_java" and r["agreed"] for r in shadow["records"])
+    record = corpus["jev_shadow"]["serialized_assess"]
+    assert record["rollout"] == "act" and record["summary"]["decisions"] == len(findings)
+    assert all(r["jev"] == "native_java" and r["agreed"] for r in record["records"])
+
+
+def test_with_jev_failing_the_scan_is_exactly_the_deterministic_one(monkeypatch):
+    """Jev out of credit (a fatal 503): every candidate is still flagged, none carries
+    a deser_jev_* field, and the order is the scanner's own."""
+    from recon.serialized_scan.scanner import run_serialized_scan
+    corpus = {"http_probe": {"by_url": {"https://t.example.test/": {
+        "headers": "Set-Cookie: a=rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA; Path=/\n"
+                   "Set-Cookie: b=gASVlAAAAAAAAAB9lC4; Path=/"}}}}
+    off = run_serialized_scan(json.loads(json.dumps(corpus)), {"SERIALIZED_SCAN_ENABLED": True})
+    with mock.patch.object(jev_shadow.requests, "post",
+                           return_value=_resp(503, {"error_type": "jev_no_credit"})):
+        on = run_serialized_scan(corpus, {"SERIALIZED_SCAN_ENABLED": True, "AI_IN_PIPELINE": True,
+                                          "SERIALIZED_SCAN_JEV_RANK": True})
+    assert on["serialized_scan"]["findings"] == off["serialized_scan"]["findings"]
+    assert not any(k.startswith("deser_jev") for f in on["serialized_scan"]["findings"] for k in f)
 
 
 def test_end_to_end_with_the_hook_off_never_calls_the_agent():
