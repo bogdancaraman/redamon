@@ -92,3 +92,33 @@ def test_out_of_scope_host_gets_no_session():
     f = deception.deception_probe("https://other.test/account", _ORACLE,
                                   DeceptionCacheSession(), _SETTINGS, timeout=2)
     assert f is None
+
+
+class PrivateAccountSession(DeceptionCacheSession):
+    """The account page itself is marked `private, no-store` (as nearly every account
+    page is), so the cache keeps the base page out; only the static-suffix URL the
+    attacker crafts gets stored, which is the whole deception."""
+
+    def get(self, url, headers=None, timeout=10, verify=True, allow_redirects=False, **kwargs):
+        resp = super().get(url, headers, timeout, verify, allow_redirects, **kwargs)
+        path = url.split("?", 1)[0]
+        if not any(ext in path for ext in (".css", ".js", ".jpg")):
+            resp.headers["cache-control"] = "private, no-store"
+        return resp
+
+
+def test_scanner_probes_deception_on_a_private_account_page():
+    # The oracle rightly finds the private base page not cacheable; the scan must still
+    # run the deception probe on it instead of skipping the URL.
+    from recon.cache_scan import scanner
+
+    orig_s, orig_w = scanner._build_retry_session, scanner.wcvs_runner.run_wcvs
+    scanner._build_retry_session = lambda *a, **k: PrivateAccountSession()
+    scanner.wcvs_runner.run_wcvs = lambda *a, **k: []
+    try:
+        rd = {"http_probe": {"by_url": {_URL: {"url": _URL, "status_code": 200}}}, "metadata": {}}
+        cs = scanner.run_cache_scan(rd, {**_SETTINGS, "WEB_CACHE_POISON_ENABLED": True})["cache_scan"]
+    finally:
+        scanner._build_retry_session, scanner.wcvs_runner.run_wcvs = orig_s, orig_w
+    assert cs["by_target"][_URL]["oracle"]["cacheable"] is False
+    assert [f["impact"] for f in cs["findings"]] == ["deception"]

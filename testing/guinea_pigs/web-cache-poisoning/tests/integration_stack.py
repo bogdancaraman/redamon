@@ -154,6 +154,43 @@ class TestNegativeControls(unittest.TestCase):
 
 
 @unittest.skipUnless(_stack_up(), "stack not up")
+class TestFalsePositiveTraps(unittest.TestCase):
+    """The cache behaviour each trap depends on, through the real nginx."""
+
+    def test_query_ignored_busters_share_one_entry(self):
+        get(f"{BASE}/safe/query-ignored?rdmncb={buster()}")
+        hdr = get(f"{BASE}/safe/query-ignored?rdmncb={buster()}")[1]
+        self.assertEqual(hdr.get("x-cache-status"), "HIT")  # a fresh buster still HITs
+
+    def test_flaky_error_is_cached_for_its_slot(self):
+        for _ in range(7):  # one of any 7 consecutive origin renders is the 503
+            u = f"{BASE}/safe/flaky?rdmncb={buster()}"
+            if get(u)[0] == 503:
+                st, hdr, _ = get(u)
+                self.assertEqual((st, hdr.get("x-cache-status")), (503, "HIT"))
+                return
+        self.fail("no 503 in 7 consecutive renders")
+
+    def test_utm_cookie_response_with_set_cookie_is_not_cached(self):
+        u = f"{BASE}/safe/utm-cookie?rdmncb={buster()}&utm_source=rdmntrap"
+        get(u)
+        self.assertNotEqual(get(u)[1].get("x-cache-status"), "HIT")
+        # ...while a client replaying the cookie gets its value back from the origin.
+        v = f"{BASE}/safe/utm-cookie?rdmncb={buster()}"
+        self.assertIn("rdmntrap", get(v, {"Cookie": "utm_source=rdmntrap"})[2])
+
+    def test_waf_block_is_uncached(self):
+        u = f"{BASE}/safe/waf?rdmncb={buster()}"
+        st, hdr, _ = get(u, {"X-Forwarded-For": "127.0.0.1"})
+        self.assertEqual(st, 403)
+        self.assertIn("no-store", hdr.get("cache-control", ""))
+        # The block is per path and time-boxed; let it lapse so later tests see 200.
+        deadline = time.time() + 12
+        while get(f"{BASE}/safe/waf?rdmncb={buster()}")[0] == 403 and time.time() < deadline:
+            time.sleep(0.5)
+
+
+@unittest.skipUnless(_stack_up(), "stack not up")
 class TestRegressions(unittest.TestCase):
     """Lock the findings/fixes this harness produced."""
 

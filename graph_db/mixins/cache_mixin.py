@@ -24,8 +24,13 @@ KNOWN_FINDING_KEYS = frozenset({
 
 KNOWN_EVIDENCE_KEYS = frozenset({
     "baseline_hash", "poisoned_hash", "clean_validation_hash", "poc_link",
-    "curl_verify", "canary", "differential_change",
+    "curl_verify", "canary", "differential_change", "clean_cache_state",
+    "baseline_stable", "control_check", "xss_context",
 })
+
+# Only the Confirmed tier is a confirmation; the description must not say more than
+# the tier does.
+_TIER_VERDICT = {"Confirmed": "confirmed", "Strong": "likely", "Tentative": "possible"}
 
 
 def _check_unknown_keys(obj: dict, known: frozenset, surface: str, identifier: str) -> None:
@@ -95,6 +100,8 @@ class CacheMixin:
                     _check_unknown_keys(evidence, KNOWN_EVIDENCE_KEYS, "evidence", endpoint_url)
 
                     impact = finding.get("impact", "unknown")
+                    tier = finding.get("confidence_tier", "Tentative")
+                    mode = finding.get("detection_mode", "reflected")
                     vuln_props = {
                         "id": vuln_id,
                         "vulnerability_id": vuln_id,
@@ -102,9 +109,9 @@ class CacheMixin:
                         "source": "cache_poisoning",
                         "name": f"Web Cache Poisoning via {vector}",
                         "description": (
-                            f"{technique} cache poisoning confirmed on {endpoint_url} "
-                            f"using {vector} (impact: {impact}, "
-                            f"{finding.get('confidence_tier', 'Tentative')})."
+                            f"{technique} cache poisoning {_TIER_VERDICT.get(tier, 'possible')} "
+                            f"on {endpoint_url} using {vector} (impact: {impact}, {tier}, "
+                            f"detected by {mode})."
                         ),
                         "severity": finding.get("severity", "medium"),
                         "cvss_score": finding.get("cvss_score", 5.0),

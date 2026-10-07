@@ -417,8 +417,16 @@ class TestResponseCacheState(unittest.TestCase):
     def test_varnish_one_miss(self):
         self.assertEqual(self.s({"x-varnish": "1001"}), "miss")
 
-    def test_age_zero_miss(self):
-        self.assertEqual(self.s({"age": "0"}), "miss")
+    def test_age_zero_is_no_evidence(self):
+        # A same-second hit also carries Age: 0, and scoring rejects an explicit miss.
+        self.assertEqual(self.s({"age": "0"}), "unknown")
+
+    def test_any_layer_hit_beats_an_inner_layer_miss(self):
+        # A cache replays the headers it stored: Varnish in front of Drupal keeps the
+        # stored X-Drupal-Cache: MISS, Cloudflare passes an origin's X-Cache: MISS on.
+        self.assertEqual(self.s({"x-drupal-cache": "MISS", "x-varnish": "1001 2002", "age": "3"}), "hit")
+        self.assertEqual(self.s({"x-cache": "MISS", "cf-cache-status": "HIT"}), "hit")
+        self.assertEqual(self.s({"x-cache": "MISS", "age": "12"}), "hit")
 
     def test_age_positive_hit(self):
         self.assertEqual(self.s({"age": "9"}), "hit")
@@ -559,7 +567,7 @@ class TestRegression(unittest.TestCase):
     def test_response_cache_state_original_four(self):
         self.assertEqual(oracle.response_cache_state(FakeResp({"x-cache": "HIT"})), "hit")
         self.assertEqual(oracle.response_cache_state(FakeResp({"x-cache": "MISS"})), "miss")
-        self.assertEqual(oracle.response_cache_state(FakeResp({"age": "0"})), "miss")
+        self.assertEqual(oracle.response_cache_state(FakeResp({"age": "0"})), "unknown")
         self.assertEqual(oracle.response_cache_state(FakeResp({})), "unknown")
 
 

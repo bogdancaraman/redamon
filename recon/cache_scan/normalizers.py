@@ -37,6 +37,12 @@ def build_finding(vector: dict, confirmation: dict, confidence: float,
             "curl_verify": ev.get("curl_verify", ""),
             "canary": ev.get("canary", ""),
             "differential_change": ev.get("differential_change", ""),
+            # What the confirmation itself observed. cache_signals above come from the
+            # oracle's warm-up probes and say nothing about this vector's clean read.
+            "clean_cache_state": ev.get("clean_cache_state", ""),
+            "baseline_stable": ev.get("baseline_stable"),
+            "control_check": ev.get("control_check", ""),
+            "xss_context": ev.get("xss_context", ""),
         },
     }
 

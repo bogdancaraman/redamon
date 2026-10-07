@@ -213,6 +213,59 @@ class TestSilentCache(unittest.TestCase):
         self.assertEqual(d1, d1b)
 
 
+class TestFalsePositiveTraps(unittest.TestCase):
+    def setUp(self):
+        self.c = client()
+        guinea._RENDERS.clear()
+        guinea._WAF_BLOCK_UNTIL.clear()
+
+    def test_drift_changes_with_the_clock(self):
+        from unittest.mock import patch
+        with patch.object(guinea.time, "time", return_value=1000.0):
+            a = self.c.get("/safe/drift").get_data(as_text=True)
+        with patch.object(guinea.time, "time", return_value=1001.0):
+            b = self.c.get("/safe/drift").get_data(as_text=True)
+        self.assertNotEqual(a, b)
+        self.assertIn("public", cc(self.c.get("/safe/drift")))
+
+    def test_ab_variant_serves_both_variants(self):
+        bodies = {self.c.get("/safe/ab-variant").get_data(as_text=True) for _ in range(60)}
+        self.assertEqual(len(bodies), 2)
+
+    def test_rare_banner_is_rare(self):
+        shown = sum("SUMMER SALE" in self.c.get("/safe/rare-banner").get_data(as_text=True)
+                    for _ in range(500))
+        self.assertTrue(10 <= shown <= 120, shown)
+
+    def test_utm_cookie_sets_on_query_and_replays_from_cookie(self):
+        r = self.c.get("/safe/utm-cookie?utm_source=rdmnab")
+        self.assertIn("rdmnab", r.get_data(as_text=True))
+        self.assertIn("utm_source=rdmnab", r.headers.get("Set-Cookie", ""))
+        self.c.set_cookie("utm_source", "rdmncd")
+        r = self.c.get("/safe/utm-cookie")
+        self.assertIn("rdmncd", r.get_data(as_text=True))
+        self.assertIsNone(r.headers.get("Set-Cookie"))  # cookie-sourced: cacheable
+
+    def test_flaky_fails_every_seventh_render(self):
+        codes = [self.c.get("/safe/flaky").status_code for _ in range(14)]
+        self.assertEqual([i + 1 for i, s in enumerate(codes) if s == 503], [7, 14])
+
+    def test_waf_blocks_after_a_spoofed_client_ip(self):
+        from unittest.mock import patch
+        with patch.object(guinea.time, "time", return_value=1000.0):
+            self.assertEqual(self.c.get("/safe/waf").status_code, 200)
+            r = self.c.get("/safe/waf", headers={"X-Forwarded-For": "127.0.0.1"})
+            self.assertEqual(r.status_code, 403)
+            self.assertIn("no-store", cc(r))
+            self.assertEqual(self.c.get("/safe/waf").status_code, 403)  # still blocked
+        with patch.object(guinea.time, "time", return_value=1009.0):
+            self.assertEqual(self.c.get("/safe/waf").status_code, 200)
+
+    def test_query_ignored_reflects_xfh(self):
+        r = self.c.get("/safe/query-ignored", headers={"X-Forwarded-Host": "evil.q"})
+        self.assertIn("evil.q", r.get_data(as_text=True))
+
+
 class TestHelpers(unittest.TestCase):
     def test_first_host_header_priority(self):
         with guinea.app.test_request_context(headers={"X-Host": "h2"}):

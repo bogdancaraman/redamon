@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.25.1] - 2026-10-07
+
+### Fixed
+
+- **Web cache poisoning no longer reports pages that change on their own.** The confirmation read the poisoned cache slot back and called it poisoned whenever the page differed from an earlier clean copy, which any page with a rotating token, an A/B variant or a rotating banner does behind a cache. A candidate must now also survive a clean read of a never-poisoned slot, and a behaviour change must reproduce on two more poisoned slots. The clean baseline is sampled once per URL on eight fresh slots and shared by every vector, and a part of the response seen moving on its own stops counting for the rest of the URL.
+- **A clean read the cache marks as a MISS is rejected,** since the content came from the origin rather than the cache, and a behaviour change with no canary needs an explicit cache HIT. Any layer's HIT wins over an inner layer's stored MISS header, and `Age: 0` no longer reads as a MISS. A canary that came back only once behind a cache with no status header no longer scores Strong.
+- **The cache scanner no longer carries cookies between requests.** A site that stored the canary in a cookie (common for `utm_source`) made the "clean" read replay it, and the deception probe's anonymous read could carry the session the authenticated responses re-set.
+- **A body change with no echoed canary no longer counts for parameter vectors** (query param, fat-GET body, matrix param). Header and framework vectors keep it, including a framework parameter that WCVS reports first.
+- **A one-off origin error, a rate limit or a WAF block mid-scan is no longer reported as cache-poisoned DoS.**
+- **URLs whose cache ignores the query string are skipped** instead of being tested in the entry real visitors get, and a 5xx on that probe no longer triggers the skip.
+- **Private account pages get the web cache deception probe,** and Cloudflare `DYNAMIC` or `no-store`/`private` pages with no observed HIT are no longer scanned for poisoning.
+- **The fat-GET `curl_verify` carries the request body** (`-X GET --data …`). It was a plain GET that reproduced nothing.
+
+### Changed
+
+- **Cache poisoning impact comes from what was observed, not from the vector.** `stored_xss` only when the canary is the host of a cached `<script src>`; a canary in another executable script context is the new `reflected_script` (high, breakout unverified); `open_redirect` only when the cached redirect points at the canary host; a cached behaviour change carrying no attacker content is the new `response_change` (medium). An `img alt`, JSON-LD or an inert template no longer counts as a script context. Both new values are in the node filters.
+- **A cache poisoning finding's description says "confirmed" only for the Confirmed tier** ("likely" for Strong) and names the detection mode. Its evidence records the clean read's cache state, the control result, baseline stability and the XSS context.
+- **The web cache poisoning guinea pig has seven false-positive traps** (page drift, A/B variant, rare banner, cookie-stored `utm_source`, flaky origin, WAF block, query-ignoring cache), each of which the previous engine reported.
+
 ## [6.25.0] - 2026-10-06
 
 ### Added

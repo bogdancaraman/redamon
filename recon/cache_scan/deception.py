@@ -54,6 +54,9 @@ def deception_probe(url: str, oracle_info: dict, session, settings: dict,
 
     Runs only with an in-scope auth profile: deception is a leak of AUTHENTICATED
     content, so a native verdict is impossible without a session to plant it.
+    `session` must not keep cookies (scanner._build_retry_session): one the
+    authenticated responses re-set would ride on the "anonymous" reads, and a cache
+    keyed on that cookie would then HIT with the planted copy for us alone.
     """
     auth = _auth_headers_for(url, settings)
     if not auth:

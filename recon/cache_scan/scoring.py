@@ -7,13 +7,15 @@ trustworthy findings reach the graph. Inspired by the HCache validation model an
 CacheX persistence logic described in the design doc.
 
 Tiers (per the design doc):
-  Confirmed  0.95-0.99  benign canary persists on a CLEAN request, cache hit
-                        explicit or strongly evidenced, repetition succeeds.
-  Strong     0.80-0.94  poisoned behaviour persists on a clean request, but the
-                        cache hit is only inferred from stable behaviour.
-  Tentative  0.50-0.79  only differential behaviour observed, no clean-request
-                        persistence.
-  Rejected   <0.50      change did not survive clean validation, or unstable.
+  Confirmed  0.95-0.99  benign canary persists on a CLEAN request that was an
+                        explicit cache HIT, and repetition succeeds.
+  Strong     0.80-0.94  poisoned behaviour persists on a clean cache HIT, or a
+                        reflected canary persists behind a silent cache (no
+                        cache-status header, so the hit can only be inferred).
+  Tentative  0.50-0.79  a behavioural change persisted, but no header shows the
+                        clean read came from the cache.
+  Rejected   <0.50      change did not survive clean validation, or the clean read
+                        was an explicit MISS (served by the origin, not the cache).
 """
 
 
@@ -23,13 +25,15 @@ def score_finding(confirmation: dict) -> tuple[float, str]:
     Expected confirmation keys (from confirm.py):
       reflected_in_baseline (bool)  - payload changed the immediate response
       persisted_on_clean (bool)     - canary returned on a clean (no-payload) request
-      cache_hit_on_clean (bool)     - that clean response was an explicit cache HIT
+      clean_cache_state (str)       - that clean response: "hit" | "miss" | "unknown"
+      cache_hit_on_clean (bool)     - legacy shape of clean_cache_state == "hit"
       repeated_ok (bool)            - second clean request also returned the canary
       stable (bool)                 - responses were stable across repeats
     """
     reflected = confirmation.get("reflected_in_baseline", False)
     persisted = confirmation.get("persisted_on_clean", False)
     cache_hit = confirmation.get("cache_hit_on_clean", False)
+    state = confirmation.get("clean_cache_state") or ("hit" if cache_hit else "unknown")
     repeated = confirmation.get("repeated_ok", False)
     stable = confirmation.get("stable", True)
 
@@ -47,18 +51,20 @@ def score_finding(confirmation: dict) -> tuple[float, str]:
             return 0.40, "Rejected"   # reflected but not cached -> not WCP
         return 0.10, "Rejected"
 
-    # Persisted on a clean request -> at minimum Strong.
-    if persisted and cache_hit and repeated and stable:
+    # The cache said the clean response came from the origin, so whatever persisted
+    # was not served by the cache: origin-side state, not cache poisoning.
+    if state == "miss":
+        return 0.30, "Rejected"
+    if state == "hit" and repeated and stable:
         return (0.97, "Confirmed") if reflected_persist else (0.90, "Strong")
-    if persisted and cache_hit and stable:
+    if state == "hit" and stable:
         return 0.90, "Strong"
-    if persisted and stable:
-        # persisted but cache-hit only inferred
+    # Silent cache: the hit can only be inferred. Our own canary on a clean request,
+    # served again on the repeat read, still carries that inference; a behavioural
+    # change does not, and neither does a canary that came back only once.
+    if stable and reflected_persist and repeated:
         return 0.82, "Strong"
-    if persisted:
-        return 0.65, "Tentative"
-
-    return 0.30, "Rejected"
+    return 0.65, "Tentative"
 
 
 def severity_for_impact(impact: str) -> tuple[str, float]:
@@ -66,10 +72,14 @@ def severity_for_impact(impact: str) -> tuple[str, float]:
     impact = (impact or "").lower()
     table = {
         "stored_xss": ("critical", 9.3),
+        # Canary cached into an executable script context, breakout unverified.
+        "reflected_script": ("high", 7.1),
         "open_redirect": ("high", 7.4),
         "deception": ("high", 7.5),       # private data exposure via cache
         "dos": ("high", 7.5),             # CPDoS
         "reflected": ("medium", 5.3),
+        # A cached behaviour change with no attacker-chosen content in it.
+        "response_change": ("medium", 5.3),
         "unknown": ("medium", 5.0),
     }
     return table.get(impact, ("medium", 5.0))

@@ -73,13 +73,18 @@ public, max-age` so nginx stores it (poisonable); negative controls send `no-sto
 | `/oracle/cf-dynamic` | `CF-Cache-Status: DYNAMIC` + private | **NEGATIVE** → not cacheable |
 | `/silent/page` (**:9091**) | none; frozen `Date` | behavioural silent-cache fallback |
 
+The pages that hard-code a HIT (`age`, `cf-cache-status`, `x-cache`, `x-varnish`,
+`drupal`, `squid`, `proxy-cache`) are reported cacheable but then **skipped** for
+poisoning: they claim a HIT even on a never-requested `?rdmncb=` URL, which a real
+cache only does when it ignores the query string, so no test could be isolated.
+
 ### Step 3/4 — Reflected poisoning (canary echoed → confirmed by reflection)
 
 | Endpoint | Unkeyed header | Reflected into | Impact class |
 |---|---|---|---|
 | `/poison/xfh-redirect` | `X-Forwarded-Host` | `Location:` (302) | `open_redirect` |
 | `/poison/xfh-script` | `X-Forwarded-Host` | `<script src>` | `stored_xss` |
-| `/poison/x-host-link` | `X-Host` | `<link href>` | `stored_xss` |
+| `/poison/x-host-link` | `X-Host` | `<link href>` | `reflected` (an attacker-hosted stylesheet, not script) |
 | `/poison/x-forwarded-server` | `X-Forwarded-Server` | body | `reflected` |
 | `/poison/x-original-url` | `X-Original-URL` | body | `reflected` |
 | `/poison/x-rewrite-url` | `X-Rewrite-URL` | body | `reflected` |
@@ -88,9 +93,9 @@ public, max-age` so nginx stores it (poisonable); negative controls send `no-sto
 
 | Endpoint | Trigger | Change | Differential dim → impact |
 |---|---|---|---|
-| `/diff/proto-redirect` | `X-Forwarded-Proto: https` | 200 → 301 redirect | `location` → `open_redirect` |
+| `/diff/proto-redirect` | `X-Forwarded-Proto: https` | 200 → 301 redirect | `location` → `response_change` (the fixed `https` payload cannot pick the destination) |
 | `/diff/status-dos` | any host header | 200 → 403 | `status` → `dos` (CPDoS) |
-| `/diff/body-banner` | any host header | body → "MAINTENANCE" | `body` |
+| `/diff/body-banner` | any host header | body → "MAINTENANCE" | `body` → `response_change` |
 
 ### Step 3 — Framework packs (fingerprint-gated)
 
@@ -108,6 +113,26 @@ public, max-age` so nginx stores it (poisonable); negative controls send `no-sto
 | `/safe/no-reflect` | cacheable but ignores all headers → nothing to poison |
 | `/safe/dynamic` | body changes every request → baseline unstable → differential FP-guard must suppress |
 | `/safe/reflect-no-store` | reflects the header but `no-store` → never cached → can't persist |
+
+### Step 5b — False-positive traps (must yield **no finding**)
+
+None of these is poisonable. Each one fooled the native confirmer before its
+control read (a clean read of a never-poisoned slot), reproduction on fresh poisoned
+slots, shared per-URL clean profile and explicit-MISS rule: a "clean" read of the
+poison slot is a cache HIT of whatever the poison MISS stored, so any page that
+changes on its own looked poisoned. The old engine wrote 17–20 false findings per run
+across these; the fixed one writes none (3 direct runs + 2 full pipeline runs, and
+100 runs each of the random ones).
+
+| Endpoint | What it does | What used to be reported |
+|---|---|---|
+| `/safe/drift` | embeds a token that rotates every 50 ms (node 217734's shape: a WordPress nonce across the internet) | body differential, Strong |
+| `/safe/ab-variant` | picks variant A or B per origin render | body differential, Strong |
+| `/safe/rare-banner` | shows a promo on ~10% of renders | body differential, Strong |
+| `/safe/utm-cookie` | stores `utm_source` in a cookie and renders it from the cookie | reflected canary on the clean read (the scanner session replayed the cookie), Strong |
+| `/safe/flaky` | every 7th render is a 503 the cache keeps for 60 s | `dos`, Strong |
+| `/safe/waf` | a spoofed `X-Forwarded-For` blocks the client for 8 s with an uncached 403 | `dos`, Strong |
+| `/safe/query-ignored` | reflects `X-Forwarded-Host`, but the nginx key ignores the query string | must be **skipped**: no `?rdmncb=` slot is isolated from real visitors |
 
 ---
 

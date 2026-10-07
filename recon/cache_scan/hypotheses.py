@@ -110,6 +110,22 @@ _FRAMEWORK_PACKS = {
 }
 
 
+def framework_param_technique(name: str) -> str:
+    """The framework_* technique of a framework pack's PARAM vector, "" for any other name.
+
+    WCVS can surface one of these first, as a generic unkeyed param, and the pack's
+    own copy is then skipped as already covered. Its re-test must still be judged as
+    the framework data-request switch it is (it reshapes the body without echoing
+    anything), not as a tracking parameter.
+    """
+    low = (name or "").lower()
+    for tech_key, pack in _FRAMEWORK_PACKS.items():
+        for vector_name, vector_type, _, _ in pack:
+            if vector_type == "param" and vector_name.lower() == low:
+                return f"framework_{tech_key.replace(' ', '_')}"
+    return ""
+
+
 def _fingerprint_technologies(combined_result: dict) -> set[str]:
     """Collect lowercase technology names from the recon fingerprint."""
     techs: set[str] = set()

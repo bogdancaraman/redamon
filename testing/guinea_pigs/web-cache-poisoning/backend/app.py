@@ -8,7 +8,7 @@ the WCP module pipeline:
   Step 1b  Cache oracle      -> /oracle/*   (each emits a different cache signal)
   Step 3   Hypotheses        -> /poison/*, /diff/*, /fw/*   (the vectors)
   Step 4   Confirmation      -> reflected (canary echoed) + differential (behaviour change)
-  Step 5   Scoring/impact    -> open_redirect / stored_xss / dos / reflected / deception
+  Step 5   Scoring/impact    -> open_redirect / stored_xss / reflected_script / dos / reflected / response_change / deception
   Negative controls          -> /safe/*    (must be REJECTED -> proves low false-positive rate)
 
 The backend ONLY shapes the response. Whether a response is *cached* (and therefore
@@ -45,7 +45,9 @@ def _trace(resp: Response) -> Response:
         f"{request.method} {request.full_path} "
         f"XFH={request.headers.get('X-Forwarded-Host')} "
         f"XFProto={request.headers.get('X-Forwarded-Proto')} "
-        f"XInvoke={request.headers.get('x-invoke-status')} -> {resp.status_code}"
+        f"XInvoke={request.headers.get('x-invoke-status')} "
+        # Tells WCVS's requests from the native engine's (RedAmon-CachePoison/1.0).
+        f"UA={(request.headers.get('User-Agent') or '')[:40]} -> {resp.status_code}"
     )
     resp.headers["Server"] = "guinea-pig-wcp/1.0"
     return resp
@@ -287,7 +289,7 @@ def p_xfh_script() -> Response:
     return cacheable(Response(body, mimetype="text/html"))
 
 
-@page("/poison/x-host-link", "4 · Reflected -> stored_xss", "X-Host reflected into <link href>")
+@page("/poison/x-host-link", "4 · Reflected -> reflected", "X-Host reflected into <link href>")
 def p_xhost() -> Response:
     xh = request.headers.get("X-Host", "assets.guinea.local")
     body = f"<html><head><link rel=stylesheet href=\"https://{xh}/style.css\"></head><body>page</body></html>"
@@ -317,7 +319,7 @@ def p_xru() -> Response:
 # poison changes response BEHAVIOUR (status / Location / body).  Catches the
 # class the reflection-only confirmer is blind to.
 # =========================================================================== #
-@page("/diff/proto-redirect", "4 · Differential -> open_redirect", "X-Forwarded-Proto=https flips to a 301 redirect (Location diff)")
+@page("/diff/proto-redirect", "4 · Differential -> response_change", "X-Forwarded-Proto=https flips to a 301 redirect (Location diff)")
 def d_proto() -> Response:
     if (request.headers.get("X-Forwarded-Proto") or "").lower() == "https":
         r = make_response("", 301)
@@ -333,7 +335,7 @@ def d_status() -> Response:
     return cacheable(Response("<html><body>public article</body></html>", mimetype="text/html"))
 
 
-@page("/diff/body-banner", "4 · Differential -> reflected/body", "X-Forwarded-Host swaps in a different body (no echoed marker)")
+@page("/diff/body-banner", "4 · Differential -> response_change", "X-Forwarded-Host swaps in a different body (no echoed marker)")
 def d_body() -> Response:
     if first_host_header():
         return cacheable(Response("<html><body>SYSTEM UNDER MAINTENANCE</body></html>", mimetype="text/html"))
@@ -388,7 +390,7 @@ def fw_remix() -> Response:
 # EXTENDED VECTOR-FAMILY COVERAGE — port / client-IP / host-override / Forwarded /
 # stored-XSS context / parameter cloaking.
 # =========================================================================== #
-@page("/poison/port", "4 · Differential -> open_redirect", "X-Forwarded-Port reflected into a redirect host:port (Location diff)")
+@page("/poison/port", "4 · Differential -> response_change", "X-Forwarded-Port reflected into a redirect host:port (Location diff)")
 def p_port() -> Response:
     port = request.headers.get("X-Forwarded-Port", "80")
     r = make_response("", 302)
@@ -396,7 +398,7 @@ def p_port() -> Response:
     return cacheable(r)
 
 
-@page("/poison/client-ip", "4 · Differential -> reflected", "X-Forwarded-For / X-Real-IP reflected into body (non-canary value)")
+@page("/poison/client-ip", "4 · Differential -> response_change", "X-Forwarded-For / X-Real-IP reflected into body (non-canary value)")
 def p_clientip() -> Response:
     ip = request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP") \
         or request.headers.get("X-Client-IP") or "10.0.0.1"
@@ -423,7 +425,7 @@ def p_forwarded() -> Response:
     return cacheable(r)
 
 
-@page("/poison/xss-inline", "4 · Reflected -> stored_xss", "X-Forwarded-Host reflected into an INLINE <script> (executable context)")
+@page("/poison/xss-inline", "4 · Reflected -> reflected_script", "X-Forwarded-Host reflected into an INLINE <script> (executable context)")
 def p_xss_inline() -> Response:
     xfh = request.headers.get("X-Forwarded-Host", "cdn.guinea.local")
     body = (f"<html><head><script>var apiBase=\"https://{xfh}/api\";fetch(apiBase+\"/beacon\");"
@@ -521,6 +523,85 @@ def s_reflect_nostore() -> Response:
     r = Response(f"<html><body>echo: {xfh}</body></html>", mimetype="text/html")
     r.headers["Cache-Control"] = "no-store"
     return r
+
+
+# =========================================================================== #
+# FALSE-POSITIVE TRAPS — none of these is poisonable, and each one fooled the
+# native confirmer before its control read / reproduction / explicit-MISS rules:
+# a same-slot "clean" read is a cache HIT of whatever the poison MISS stored, so
+# any page that changes for reasons of its own looked poisoned. All must yield
+# NO finding.
+# =========================================================================== #
+_RENDERS: dict[str, int] = {}
+_WAF_BLOCK_UNTIL: dict[str, float] = {}
+
+
+def _render_count(path: str) -> int:
+    _RENDERS[path] = _RENDERS.get(path, 0) + 1
+    return _RENDERS[path]
+
+
+@page("/safe/drift", "Trap · page drift", "Archive page embedding a rotating token (a WordPress nonce/timestamp): the body changes between the baseline and the poison on its own")
+def s_drift() -> Response:
+    # 50 ms buckets: at LAN latency a whole URL takes well under a second, so a
+    # per-second token (what node 217734's page carried, seen across the internet)
+    # would never change mid-scan here.
+    return cacheable(Response(
+        f"<html><body>January 2021 archive<script>var wpNonce='{int(time.time() * 20)}';</script></body></html>",
+        mimetype="text/html"))
+
+
+@page("/safe/ab-variant", "Trap · A/B bucket", "Each origin render picks variant A or B at random (cookie-less A/B test)")
+def s_ab_variant() -> Response:
+    import random
+    return cacheable(Response(
+        f"<html><body>hero banner: variant {random.choice('AB')}</body></html>", mimetype="text/html"))
+
+
+@page("/safe/rare-banner", "Trap · rare banner", "A promo banner shown on ~10% of origin renders")
+def s_rare_banner() -> Response:
+    import random
+    promo = "<div class=promo>SUMMER SALE</div>" if random.random() < 0.10 else ""
+    return cacheable(Response(f"<html><body>catalog{promo}</body></html>", mimetype="text/html"))
+
+
+@page("/safe/utm-cookie", "Trap · origin state", "Stores utm_source in a cookie and renders it from the cookie on later visits; a cookie-carrying client sees its own canary come back with no cache involved")
+def s_utm_cookie() -> Response:
+    q = request.args.get("utm_source")
+    src = q or request.cookies.get("utm_source") or "direct"
+    r = cacheable(Response(
+        f'<html><body><form><input type="hidden" name="utm_source" value="{src}"></form></body></html>',
+        mimetype="text/html"))
+    if q:
+        r.set_cookie("utm_source", q)  # nginx never caches a response carrying Set-Cookie
+    return r
+
+
+@page("/safe/flaky", "Trap · flaky origin", "Every 7th origin render is a 503 that the cache keeps for 60s; a poison request that happens to catch it looks like CPDoS")
+def s_flaky() -> Response:
+    if _render_count("/safe/flaky") % 7 == 0:
+        return cacheable(make_response("<h1>503 upstream timeout</h1>", 503))
+    return cacheable(Response("<html><body>status page</body></html>", mimetype="text/html"))
+
+
+@page("/safe/waf", "Trap · WAF block", "A spoofed X-Forwarded-For gets the client blocked for 8s with an UNCACHED 403, so every read after the poison fails the same way")
+def s_waf() -> Response:
+    now = time.time()
+    if request.headers.get("X-Forwarded-For"):
+        _WAF_BLOCK_UNTIL["/safe/waf"] = now + 8
+    if now < _WAF_BLOCK_UNTIL.get("/safe/waf", 0):
+        r = make_response("<h1>403 Request blocked</h1>", 403)
+        r.headers["Cache-Control"] = "no-store"
+        return r
+    return cacheable(Response("<html><body>protected page</body></html>", mimetype="text/html"))
+
+
+@page("/safe/query-ignored", "Trap · unisolatable cache", "Reflects X-Forwarded-Host (genuinely poisonable) but the nginx key IGNORES the query string, so a cache-buster cannot isolate a test: the module must skip it and never poison")
+def s_query_ignored() -> Response:
+    xfh = request.headers.get("X-Forwarded-Host", "cdn.guinea.local")
+    return cacheable(Response(
+        f"<html><head><link rel=stylesheet href=\"https://{xfh}/site.css\"></head><body>shop</body></html>",
+        mimetype="text/html"))
 
 
 if __name__ == "__main__":

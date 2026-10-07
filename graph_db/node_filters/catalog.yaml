@@ -278,14 +278,14 @@ kinds:
         type: enum
         prop: cache_impact
         label: Impact
-        values: [stored_xss, open_redirect, deception, dos, reflected]
+        values: [stored_xss, reflected_script, open_redirect, deception, dos, reflected, response_change]
       cache_technique:
         type: enum
         prop: cache_technique
         label: Technique
-        values: [unkeyed_header, unkeyed_param, cache_deception, fat_get, request_smuggling,
+        values: [unkeyed_header, unkeyed_param, cache_deception, fat_get, normalization, request_smuggling,
                  framework_next, framework_nuxt, framework_remix, framework_react_router]
-      cache_vector_type: { type: enum, prop: cache_vector_type, label: Vector, values: [header, param, path] }
+      cache_vector_type: { type: enum, prop: cache_vector_type, label: Vector, values: [header, param, fat_get, path_param, path] }
       source_engine:     { type: enum, prop: source_engine, label: Engine, values: [wcvs, hypothesis] }
       cache_header:      { type: text, prop: cache_header, label: Unkeyed header }
       cache_param:       { type: text, prop: cache_param, label: Unkeyed parameter }

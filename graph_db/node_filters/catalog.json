@@ -1135,10 +1135,12 @@
           "label": "Impact",
           "values": [
             "stored_xss",
+            "reflected_script",
             "open_redirect",
             "deception",
             "dos",
-            "reflected"
+            "reflected",
+            "response_change"
           ]
         },
         "cache_technique": {
@@ -1150,6 +1152,7 @@
             "unkeyed_param",
             "cache_deception",
             "fat_get",
+            "normalization",
             "request_smuggling",
             "framework_next",
             "framework_nuxt",
@@ -1164,6 +1167,8 @@
           "values": [
             "header",
             "param",
+            "fat_get",
+            "path_param",
             "path"
           ]
         },

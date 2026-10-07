@@ -17,6 +17,7 @@ import copy
 import ipaddress
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from http.cookiejar import DefaultCookiePolicy
 from urllib.parse import urlparse
 
 import requests
@@ -47,6 +48,12 @@ def _build_retry_session(retry_count: int = 1, backoff: float = 0.5) -> requests
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     session.headers.update({"User-Agent": "RedAmon-CachePoison/1.0"})
+    # Never store a cookie. Every probe must be a stateless client: a cookie the
+    # poison response sets (a site remembering utm_source) would ride on the "clean"
+    # victim read and make the origin replay the canary with no cache involved, and
+    # the deception probe's anonymous read must not carry the session the
+    # authenticated responses re-set.
+    session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
     return session
 
 
@@ -178,7 +185,12 @@ def run_cache_scan(combined_result: dict, settings: dict) -> dict:
 
     args = (wcvs_by_url, combined_result, settings, min_conf, cross_vantage, timeout, verify_ssl)
     if workers == 1 or len(target_urls) == 1:
-        results = [_scan_one_url(u, *args) for u in target_urls]
+        results = []
+        for u in target_urls:
+            try:
+                results.append(_scan_one_url(u, *args))
+            except Exception as e:
+                results.append(_failed_url(u, e))
     else:
         results = []
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -188,10 +200,7 @@ def run_cache_scan(combined_result: dict, settings: dict) -> dict:
                 try:
                     results.append(fut.result())
                 except Exception as e:
-                    print(f"[!][CachePoison] {u} confirmation failed: {e}")
-                    results.append((u, {"oracle": {"cacheable": False, "indicator": "",
-                                                    "signals": [f"error: {e}"], "saw_hit": False},
-                                        "findings": []}, 0))
+                    results.append(_failed_url(u, e))
 
     # Merge worker results in the main thread (no shared-state mutation).
     by_target: dict[str, dict] = {}
@@ -224,6 +233,15 @@ def run_cache_scan(combined_result: dict, settings: dict) -> dict:
     return combined_result
 
 
+def _failed_url(url, error):
+    """The target entry for a URL whose confirmation raised: one bad URL must not
+    abort the scan of the others, in either the sequential or the parallel path."""
+    print(f"[!][CachePoison] {url} confirmation failed: {error}")
+    return (url, {"oracle": {"cacheable": False, "indicator": "",
+                             "signals": [f"error: {error}"], "saw_hit": False},
+                  "findings": []}, 0)
+
+
 def _scan_one_url(url, wcvs_by_url, combined_result, settings, min_conf,
                   cross_vantage, timeout, verify_ssl):
     """Confirm every vector for ONE URL (Phases 1b-5). Thread worker.
@@ -243,10 +261,26 @@ def _scan_one_url(url, wcvs_by_url, combined_result, settings, min_conf,
         )
         target_entry = {"oracle": oracle_info, "findings": []}
         if not oracle_info["cacheable"]:
-            return url, target_entry, 0  # no cache -> nothing to poison
+            # Nothing to poison. Web cache deception targets exactly these pages,
+            # though: a private account page the cache declines to keep, which a
+            # static-looking suffix then gets stored under.
+            if oracle_info.get("cache_layer"):
+                _probe_deception(url, oracle_info, session, settings, timeout, verify_ssl,
+                                 cross_vantage, target_entry)
+            return url, target_entry, 0
 
         # Phase 2: cache-buster placement
         buster_info = buster.find_cache_buster(url, session, settings, timeout, verify_ssl)
+        if not buster_info["isolated"]:
+            # Every poison (and the deception plant) would land in the entry real
+            # visitors are served.
+            reason = (f"cache ignores the '{buster_info['param']}' query param, "
+                      "so tests cannot be isolated from real visitors")
+            print(f"[!][CachePoison] {url}: skipped, {reason}")
+            target_entry["skipped"] = reason
+            _probe_deception(url, oracle_info, session, settings, timeout, verify_ssl,
+                             cross_vantage, target_entry)
+            return url, target_entry, 1
 
         # Phase 3: build vectors (WCVS candidates + native hypotheses)
         wcvs_here = wcvs_by_url.get(url, [])
@@ -262,8 +296,12 @@ def _scan_one_url(url, wcvs_by_url, combined_result, settings, min_conf,
         vectors = vectors[:_MAX_VECTORS_PER_URL]
 
         # Phase 4 + 5: confirm + score (per-vector sequence stays ordered)
+        profile = None
+        if settings.get("WEB_CACHE_POISON_DIFFERENTIAL", True):
+            profile = confirm.clean_profile(url, buster_info["param"], session, timeout, verify_ssl)
         for vector in vectors:
-            record = confirm.confirm_vector(vector, buster_info, session, settings, timeout, verify_ssl)
+            record = confirm.confirm_vector(vector, buster_info, session, settings, timeout,
+                                            verify_ssl, baseline=profile)
             confidence, tier = scoring.score_finding(record)
             if confidence < min_conf:
                 continue
@@ -276,20 +314,27 @@ def _scan_one_url(url, wcvs_by_url, combined_result, settings, min_conf,
             finding["cross_vantage"] = cross_vantage
             target_entry["findings"].append(finding)
 
-        # Web cache deception (class 10): auth-aware, so it runs after the vector loop
-        # and only when a session is in scope. A static-suffix URL that serves the
-        # authenticated page from cache to an anonymous request is the leak.
-        if safety.is_deception_allowed(settings):
-            dec = deception.deception_probe(url, oracle_info, session, settings, timeout, verify_ssl)
-            if dec:
-                dec["cross_vantage"] = cross_vantage
-                target_entry["findings"].append(dec)
+        _probe_deception(url, oracle_info, session, settings, timeout, verify_ssl,
+                         cross_vantage, target_entry)
         return url, target_entry, 1
     finally:
         try:
             session.close()
         except Exception:
             pass
+
+
+def _probe_deception(url, oracle_info, session, settings, timeout, verify_ssl,
+                     cross_vantage, target_entry) -> None:
+    """Web cache deception (class 10): auth-aware, so it only acts when a session is
+    in scope. A static-suffix URL that serves the authenticated page from cache to an
+    anonymous request is the leak. Its plant carries a random marker in the PATH, so
+    it never lands in an entry a real visitor requests, even when the query is unkeyed."""
+    if safety.is_deception_allowed(settings):
+        dec = deception.deception_probe(url, oracle_info, session, settings, timeout, verify_ssl)
+        if dec:
+            dec["cross_vantage"] = cross_vantage
+            target_entry["findings"].append(dec)
 
 
 def _wcvs_technique(raw: str) -> str:
@@ -318,6 +363,7 @@ def _wcvs_vector(url: str, candidate: dict) -> dict:
         vector_type, payload_kind, impact = "path", "path", "deception"
     elif technique == "unkeyed_param":
         vector_type, payload_kind, impact = "param", "value", "reflected"
+        technique = hypotheses.framework_param_technique(name) or technique
     elif technique == "fat_get":
         # Body-borne param: re-test as a fat GET, NOT a header (the old default),
         # so the native confirmation matches the transport WCVS actually exercised.

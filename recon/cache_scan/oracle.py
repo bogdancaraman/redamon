@@ -152,6 +152,11 @@ def detect_cache_oracle(url: str, session: requests.Session, timeout: int = 10,
     cacheable = False
     cache_layer = False
     vary = ""
+    # The response itself said it must not be stored (a DYNAMIC/BYPASS status, or a
+    # no-store/private Cache-Control). Other signals in the same response (nginx's
+    # X-Cache-Status: MISS on every proxied response, a Via) only prove a cache sits
+    # in the path, not that it keeps THIS page.
+    declined = False
 
     try:
         for attempt in range(max(2, max_probes)):
@@ -176,7 +181,7 @@ def detect_cache_oracle(url: str, session: requests.Session, timeout: int = 10,
                 elif state == "miss":
                     cacheable = True
                 elif state == "uncacheable":
-                    pass             # cache layer present, but NOT caching this URL
+                    declined = True  # cache layer present, but NOT caching this URL
                 else:
                     cacheable = True  # present-but-unknown value => cache layer
 
@@ -206,6 +211,7 @@ def detect_cache_oracle(url: str, session: requests.Session, timeout: int = 10,
             if cc:
                 low = cc.lower()
                 disqualified = "no-store" in low or "private" in low
+                declined = declined or disqualified
                 if not disqualified and ("public" in low or _positive_max_age(low)):
                     signals.append(f"cache-control: {cc}")
                     indicator = indicator or "cache-control"
@@ -216,9 +222,16 @@ def detect_cache_oracle(url: str, session: requests.Session, timeout: int = 10,
                 vary = hdrs["vary"]
                 signals.append(f"vary: {hdrs['vary']}")
 
-            # Done at least 2 requests and the cache is established -> stop.
-            if attempt >= 1 and cacheable:
+            # Done at least 2 requests and the cache is established -> stop. A page that
+            # declined caching gets every probe: an edge that stores it anyway may only
+            # show its HIT on a later node or request.
+            if attempt >= 1 and cacheable and (saw_hit or not declined):
                 break
+
+        # A cache that stores the page anyway (an edge rule overriding the origin)
+        # shows it with a HIT on a repeat probe, or replays a frozen Date below.
+        if declined and not saw_hit:
+            cacheable = False
 
         # Fallback for silent caches that emit no cache headers at all.
         behavioral_hit = False
@@ -256,27 +269,39 @@ def detect_cache_oracle(url: str, session: requests.Session, timeout: int = 10,
 
 
 def response_cache_state(resp: requests.Response) -> str:
-    """Classify a single response as 'hit' / 'miss' / 'unknown' from headers."""
+    """Classify a single response as 'hit' / 'miss' / 'unknown' from headers.
+
+    A hit marker from ANY layer wins. A cache replays the headers it stored, so a
+    response it serves can carry an inner layer's MISS: Varnish in front of Drupal
+    keeps the stored X-Drupal-Cache: MISS, Cloudflare passes an origin's X-Cache: MISS
+    through. Scoring rejects a "miss" outright, so it is returned only when no layer
+    says the response came from a cache.
+    """
     hdrs = {k.lower(): v.lower() for k, v in resp.headers.items()}
-    # Explicit hit/miss status tokens win over an inferred Varnish id count.
+    states: set[str] = set()
     for name in _CACHE_STATUS_HEADERS:
         if name == "x-varnish" or name not in hdrs:
             continue
         val = hdrs[name]
         if any(t in val for t in _HIT_TOKENS) or any(t in val for t in _STALE_TOKENS):
-            return "hit"
-        if any(t in val for t in _MISS_TOKENS) or any(t in val for t in _UNCACHEABLE_TOKENS):
-            return "miss"
+            states.add("hit")
+        elif any(t in val for t in _MISS_TOKENS) or any(t in val for t in _UNCACHEABLE_TOKENS):
+            states.add("miss")
     # Varnish default numeric header: two ids => served from cache, one => miss.
     if "x-varnish" in hdrs:
         ids = [t for t in hdrs["x-varnish"].split() if t.isdigit()]
         if len(ids) >= 2:
-            return "hit"
-        if len(ids) == 1:
-            return "miss"
+            states.add("hit")
+        elif len(ids) == 1:
+            states.add("miss")
     if "age" in hdrs:
+        # Age: 0 is no evidence either way: Varnish, Fastly and Apache's mod_cache
+        # send it on a hit served within the same second.
         try:
-            return "hit" if int(hdrs["age"]) > 0 else "miss"
+            if int(hdrs["age"]) > 0:
+                states.add("hit")
         except ValueError:
-            return "unknown"
-    return "unknown"
+            pass
+    if "hit" in states:
+        return "hit"
+    return "miss" if "miss" in states else "unknown"

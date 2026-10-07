@@ -236,6 +236,132 @@ class MatrixParamCacheSession:
         return FakeResponse("<body>menu source: direct</body>", {"x-cache": "miss"})
 
 
+class _CachedOrigin:
+    """A URL-keyed shared cache in front of an origin: the first request to a URL is a
+    MISS that calls render() and stores the result, later ones are HITs of that copy.
+    Request headers and body never enter the key (an unkeyed-input cache)."""
+
+    def __init__(self):
+        self.store = {}
+        self.renders = 0
+
+    def render(self, url, headers, data):  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    def get(self, url, headers=None, data=None, timeout=10, verify=True, allow_redirects=False):
+        if url in self.store:
+            status, body = self.store[url]
+            return FakeResponse(body, {"x-cache": "hit", "age": "3"}, status=status)
+        self.renders += 1
+        status, body = self.render(url, headers or {}, data)
+        self.store[url] = (status, body)
+        return FakeResponse(body, {"x-cache": "miss"}, status=status)
+
+
+class TimeDriftSession(_CachedOrigin):
+    """NOT vulnerable. The page embeds a token that rotates after the first
+    `flip_after` origin renders (a timestamp/nonce bucket), so the baseline pair agrees
+    and everything rendered later differs. Node 217734's real-world shape: a WordPress
+    page behind Cloudflare whose body changed between the baselines and the poison."""
+
+    def __init__(self, flip_after=2):
+        super().__init__()
+        self.flip_after = flip_after
+
+    def render(self, url, headers, data):
+        tick = 0 if self.renders <= self.flip_after else 1
+        return 200, f"<html><body>archive tick={tick}</body></html>"
+
+
+class PairedVariantSession(_CachedOrigin):
+    """NOT vulnerable. A two-variant page (an A/B bucket picked per origin render) whose
+    variants come in runs of two, so any two consecutive renders often agree."""
+
+    def render(self, url, headers, data):
+        return 200, f"<html><body>variant {'AB'[(self.renders // 2) % 2]}</body></html>"
+
+
+class FlakyPoisonSession(_CachedOrigin):
+    """NOT vulnerable. The origin fails ONCE (a 503 glitch) on exactly the render the
+    poison request triggers; the cache stores that error for the poison slot."""
+
+    def __init__(self, fail_on_render=3):
+        super().__init__()
+        self.fail_on_render = fail_on_render
+
+    def render(self, url, headers, data):
+        if self.renders == self.fail_on_render:
+            return 503, "<h1>upstream error</h1>"
+        return 200, "<html><body>article</body></html>"
+
+
+class WafBlockSession(_CachedOrigin):
+    """NOT vulnerable. A WAF in front of the cache blocks the scanner's IP as soon as it
+    sees the trigger header, then answers EVERY request with an uncached 403."""
+
+    def __init__(self, trigger="X-Forwarded-Proto"):
+        super().__init__()
+        self.trigger = trigger.lower()
+        self.blocked = False
+
+    def get(self, url, headers=None, data=None, **kwargs):
+        if any(k.lower() == self.trigger for k in (headers or {})):
+            self.blocked = True
+        if self.blocked:
+            return FakeResponse("<h1>Access denied</h1>", {}, status=403)
+        return super().get(url, headers, data, **kwargs)
+
+    def render(self, url, headers, data):
+        return 200, "<html><body>article</body></html>"
+
+
+class ScriptedVariantSession(_CachedOrigin):
+    """NOT vulnerable. Origin renders cycle through the variants A A B A B B. Fed to one
+    vector's own two-slot baseline, that sequence passes the baseline, the control and
+    both reproductions; any 8 consecutive renders (the per-URL profile) see both."""
+
+    def render(self, url, headers, data):
+        return 200, f"<html><body>variant {'AABABB'[(self.renders - 1) % 6]}</body></html>"
+
+
+class OriginStateSession:
+    """NOT vulnerable, no cache in the path (silent: no cache headers). The origin
+    remembers the last utm_source it saw for this client (what a cookie the session
+    replays, or server-side attribution, does) and renders it into a hidden field."""
+
+    def __init__(self):
+        self.remembered = "direct"
+
+    def get(self, url, headers=None, timeout=10, verify=True, allow_redirects=False, **kwargs):
+        from urllib.parse import parse_qs, urlparse
+        vals = parse_qs(urlparse(url).query).get("utm_source")
+        if vals:
+            self.remembered = vals[0]
+        return FakeResponse(f'<form><input type="hidden" name="utm_source" value="{self.remembered}"></form>')
+
+
+class QueryIgnoringCacheSession:
+    """A cache whose key ignores the query string entirely (a CDN "ignore query string"
+    rule) in front of an origin that reflects X-Forwarded-Host. Records how many
+    requests carried the trigger header, i.e. how many reached the REAL entry."""
+
+    def __init__(self):
+        self.store = {}
+        self.poison_requests = 0
+
+    def get(self, url, headers=None, timeout=10, verify=True, allow_redirects=False, **kwargs):
+        from urllib.parse import urlparse
+        key = urlparse(url).path
+        xfh = (headers or {}).get("X-Forwarded-Host")
+        if xfh:
+            self.poison_requests += 1
+        if key in self.store:
+            return FakeResponse(self.store[key], {"x-cache": "hit", "age": "5"})
+        body = f"<link href=//{xfh or 'cdn.shop'}/s.css>"
+        self.store[key] = body
+        return FakeResponse(body, {"x-cache": "miss"})
+
+
 class TestWcvsParser(unittest.TestCase):
     """The WCVS JSON report parser (pkg/report.go schema)."""
 
@@ -544,10 +670,36 @@ class TestBuster(unittest.TestCase):
         self.assertEqual(buster.add_path_segment("https://x/a", "b"), "https://x/a/b")
         self.assertEqual(buster.add_path_segment("https://x/a/", "/b"), "https://x/a/b")
 
-    def test_find_buster_default_param_and_always_isolated(self):
+    def test_find_buster_default_param_and_isolated_on_miss(self):
         info = buster.find_cache_buster("https://x/", _HeaderSession({"x-cache": "miss"}), {})
         self.assertEqual(info["param"], "rdmncb")
-        self.assertTrue(info["isolated"])  # isolation is unconditional (safety invariant)
+        self.assertTrue(info["isolated"])
+
+    def test_find_buster_ignores_a_retried_5xx_hit(self):
+        # The origin flaked on the first probe; the session's retry re-sent it onto the
+        # slot that 503 had just filled and came back a HIT. Seen on the lab's
+        # /safe/flaky, which was then skipped as "cache ignores the query string".
+        class _FlakyFirstProbe:
+            def __init__(self):
+                self.calls = 0
+
+            def get(self, url, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return FakeResponse("<h1>503</h1>", {"x-cache": "HIT"}, status=503)
+                return FakeResponse("<ok/>", {"x-cache": "MISS" if self.calls == 2 else "HIT"})
+
+        info = buster.find_cache_buster("https://x/", _FlakyFirstProbe(), {})
+        self.assertTrue(info["isolated"])
+        self.assertTrue(info["keyed_on_query"])
+
+    def test_find_buster_hit_on_a_fresh_value_is_not_isolated(self):
+        # A never-used buster value can only HIT if the cache ignores the query string:
+        # every "isolated" test slot would be the entry real visitors get.
+        sess = _SeqSession([{"x-cache": "hit"}, {"x-cache": "hit"}])
+        info = buster.find_cache_buster("https://x/", sess, {})
+        self.assertFalse(info["isolated"])
+        self.assertFalse(info["keyed_on_query"])
 
     def test_find_buster_custom_param_from_settings(self):
         info = buster.find_cache_buster(
@@ -760,7 +912,8 @@ class TestOracle(unittest.TestCase):
     def test_response_cache_state(self):
         self.assertEqual(oracle.response_cache_state(FakeResponse(headers={"x-cache": "HIT"})), "hit")
         self.assertEqual(oracle.response_cache_state(FakeResponse(headers={"x-cache": "MISS"})), "miss")
-        self.assertEqual(oracle.response_cache_state(FakeResponse(headers={"age": "0"})), "miss")
+        # Age: 0 is ambiguous (a same-second hit), and scoring rejects an explicit miss.
+        self.assertEqual(oracle.response_cache_state(FakeResponse(headers={"age": "0"})), "unknown")
         self.assertEqual(oracle.response_cache_state(FakeResponse(headers={})), "unknown")
         self.assertEqual(oracle.response_cache_state(FakeResponse(headers={"x-cache-status": "STALE"})), "hit")
         self.assertEqual(oracle.response_cache_state(FakeResponse(headers={"x-varnish": "1001 2002"})), "hit")
@@ -790,6 +943,33 @@ class TestOracle(unittest.TestCase):
         info = oracle.detect_cache_oracle(
             "https://x/", _HeaderSession({"cache-control": "private, max-age=600"}), behavioral=False)
         self.assertFalse(info["cacheable"])
+
+    def test_status_miss_does_not_override_a_private_response(self):
+        # nginx stamps X-Cache-Status: MISS on every proxied response, stored or not;
+        # the lab's /oracle/no-store and /oracle/cf-dynamic were scanned because of it.
+        for hdrs in ({"x-cache-status": "MISS", "cache-control": "no-store, private"},
+                     {"x-cache-status": "MISS", "cf-cache-status": "DYNAMIC",
+                      "cache-control": "private, no-cache"}):
+            info = oracle.detect_cache_oracle("https://x/", _HeaderSession(hdrs), behavioral=False)
+            self.assertFalse(info["cacheable"], hdrs)
+            self.assertTrue(info["cache_layer"])
+
+    def test_private_page_whose_hit_shows_on_the_third_probe_stays_cacheable(self):
+        # A multi-node edge: the first two probes land on cold nodes.
+        sess = _SeqSession([{"x-cache": "MISS", "cache-control": "private"},
+                            {"x-cache": "MISS", "cache-control": "private"},
+                            {"x-cache": "HIT", "cache-control": "private"}])
+        info = oracle.detect_cache_oracle("https://x/", sess, behavioral=False)
+        self.assertTrue(info["cacheable"])
+        self.assertEqual(sess.calls, 3)
+
+    def test_private_page_a_cache_stores_anyway_stays_cacheable(self):
+        # An edge rule that caches despite the origin's directive shows a HIT on repeat.
+        sess = _SeqSession([{"x-cache": "MISS", "cache-control": "private"},
+                            {"x-cache": "HIT", "cache-control": "private"}])
+        info = oracle.detect_cache_oracle("https://x/", sess, behavioral=False)
+        self.assertTrue(info["cacheable"])
+        self.assertTrue(info["saw_hit"])
 
     def test_s_maxage_makes_eligible(self):
         info = oracle.detect_cache_oracle(
@@ -872,7 +1052,9 @@ class TestConfirm(unittest.TestCase):
         # Differential-only persistence is capped at Strong (never Confirmed).
         self.assertEqual(tier, "Strong")
         self.assertLess(conf, 0.95)
-        self.assertEqual(confirm.classify_impact(self._diff_vector(), rec), "open_redirect")
+        # A fixed "https" payload cannot choose where the redirect goes, so the cached
+        # redirect is a behaviour change, not an open redirect.
+        self.assertEqual(confirm.classify_impact(self._diff_vector(), rec), "response_change")
 
     def test_dynamic_page_no_false_positive(self):
         # Body flaps every request -> body dimension untrusted -> no differential finding.
@@ -999,10 +1181,23 @@ class TestConfirm(unittest.TestCase):
         self.assertTrue(rec["persisted_on_clean"])      # still there on the clean read
         self.assertTrue(rec["cache_hit_on_clean"])      # and that read was a cache HIT
 
-    def test_classify_impact_redirect(self):
-        vec = {"impact_hint": "reflected"}
-        rec = {"persisted_on_clean": True, "evidence": {"redirect_poisoned": "//evil/"}}
-        self.assertEqual(confirm.classify_impact(vec, rec), "open_redirect")
+    def test_classify_impact_redirect_needs_the_canary_host(self):
+        vec = {"impact_hint": "open_redirect"}
+        to_canary = {"persisted_on_clean": True, "persisted_reflected": True,
+                     "redirect_to_canary": True, "evidence": {}}
+        self.assertEqual(confirm.classify_impact(vec, to_canary), "open_redirect")
+        # A page that redirects anyway (trailing slash, http->https) has a Location on
+        # the poisoned response too; that alone is not an attacker-chosen destination.
+        own_redirect = {"persisted_on_clean": True, "persisted_reflected": True,
+                        "evidence": {"redirect_poisoned": "https://shop/home/"}}
+        self.assertEqual(confirm.classify_impact(vec, own_redirect), "reflected")
+
+    def test_redirects_to_canary_reads_the_host_only(self):
+        self.assertTrue(confirm._redirects_to_canary("https://rdmnab.redamon-poc.invalid/x", "rdmnab"))
+        self.assertTrue(confirm._redirects_to_canary("//rdmnab.redamon-poc.invalid/x", "rdmnab"))
+        # Token in the query of a same-site redirect: reflected, but the victim stays on site.
+        self.assertFalse(confirm._redirects_to_canary("/login?next=rdmnab", "rdmnab"))
+        self.assertFalse(confirm._redirects_to_canary("", "rdmnab"))
 
     def test_xss_context_helper(self):
         self.assertTrue(confirm._xss_context('<script src="//rdmnX.invalid/a.js"></script>', "rdmnX"))
@@ -1012,13 +1207,65 @@ class TestConfirm(unittest.TestCase):
         self.assertFalse(confirm._xss_context("<p>benign rdmnX text</p>", "rdmnX"))
         self.assertFalse(confirm._xss_context("<a href='//rdmnX.invalid'>", "rdmnX"))  # link, not executable
 
+    def test_xss_context_ignores_benign_placements(self):
+        # Each of these matched the old patterns and was reported as critical stored XSS.
+        benign = [
+            '<img src="/logo.png" alt="results for rdmnX">',            # alt text, not src
+            '<a onclick="track()" href="/?utm_source=rdmnX">x</a>',     # canary in href, not the handler
+            '<script type="application/ld+json">{"url":"https://s/?u=rdmnX"}</script>',  # JSON-LD
+            '<script id="__NEXT_DATA__" type="application/json">{"q":"rdmnX"}</script>',
+            '<link rel=stylesheet href="https://rdmnX.redamon-poc.invalid/s.css">',
+        ]
+        for body in benign:
+            self.assertFalse(confirm._xss_context(body, "rdmnX"), body)
+
+    def test_script_type_allow_list_and_tag_anchoring(self):
+        n = "rdmnX"
+        self.assertTrue(confirm._xss_context(f'<script type="module">import("{n}")</script>', n))
+        self.assertTrue(confirm._xss_context(f"<script type='text/javascript'>x='{n}'</script>", n))
+        for body in (
+            f'<script type="text/x-handlebars-template"><p>{n}</p></script>',  # inert template
+            f'<script data-src="https://{n}.redamon-poc.invalid/a.js"></script>',  # lazy-load attr
+            f'<p>set onload="{n}" in the docs</p>',                              # text, not a tag
+            f"<p>see javascript:alert('{n}')</p>",                               # text, not a tag
+        ):
+            self.assertFalse(confirm._xss_context(body, n), body)
+        self.assertFalse(confirm._script_src_canary(
+            f'<script data-src="https://{n.lower()}.redamon-poc.invalid/a.js"></script>', n.lower()))
+
+    def test_script_src_canary_requires_the_host(self):
+        self.assertTrue(confirm._script_src_canary(
+            '<script src="https://rdmnx.redamon-poc.invalid/app.js"></script>', "rdmnx"))
+        self.assertTrue(confirm._script_src_canary("<script src=//rdmnx.redamon-poc.invalid/a.js>", "rdmnx"))
+        # Canary in a same-site script's query string: an executable context, not a proof.
+        body = '<script src="/js/app.js?ref=rdmnx"></script>'
+        self.assertFalse(confirm._script_src_canary(body, "rdmnx"))
+        self.assertTrue(confirm._xss_context(body, "rdmnx"))
+
     def test_classify_stored_xss_beats_hint(self):
-        # A persisted canary in an executable context is stored XSS (critical), even when
-        # the vector hint says open_redirect.
+        # A persisted canary as the HOST of a <script src> is stored XSS (critical), even
+        # when the vector hint says open_redirect.
         vec = {"impact_hint": "open_redirect"}
-        rec = {"persisted_on_clean": True, "xss_context": True, "evidence": {}}
+        rec = {"persisted_on_clean": True, "persisted_reflected": True,
+               "xss_context": True, "script_src_canary": True, "evidence": {}}
         self.assertEqual(confirm.classify_impact(vec, rec), "stored_xss")
         self.assertEqual(scoring.severity_for_impact("stored_xss"), ("critical", 9.3))
+
+    def test_unproven_script_context_is_not_stored_xss(self):
+        # An alphanumeric canary inside an inline script string proves where input
+        # lands, not that a quote or </script> survives: high, not critical.
+        vec = {"impact_hint": "reflected"}
+        rec = {"persisted_on_clean": True, "persisted_reflected": True,
+               "xss_context": True, "evidence": {}}
+        self.assertEqual(confirm.classify_impact(vec, rec), "reflected_script")
+        self.assertEqual(scoring.severity_for_impact("reflected_script")[0], "high")
+
+    def test_body_change_is_not_labelled_reflected(self):
+        # Node 217734's label: a differential body change echoed nothing.
+        vec = {"impact_hint": "reflected"}
+        rec = {"persisted_on_clean": True, "persisted_differential": True,
+               "differential_change": "body", "evidence": {}}
+        self.assertEqual(confirm.classify_impact(vec, rec), "response_change")
 
     def test_script_src_reflection_detected_as_xss(self):
         # The vulnerable fake reflects the host into <script src=//canary> -> stored XSS.
@@ -1291,7 +1538,7 @@ class TestDifferentialIntegration(unittest.TestCase):
         self.assertEqual(cs["summary"]["confirmed"], 0)
         f = cs["findings"][0]
         self.assertEqual(f["detection_mode"], "differential")
-        self.assertEqual(f["impact"], "open_redirect")
+        self.assertEqual(f["impact"], "response_change")  # fixed payload: not attacker-routed
         self.assertEqual(f["evidence"]["differential_change"], "location")
         self.assertEqual(f["cache_header"], "X-Forwarded-Proto")
 
@@ -1300,6 +1547,279 @@ class TestDifferentialIntegration(unittest.TestCase):
         self.assertEqual(cs["summary"]["total_findings"], 0)
         # The URL was still scanned and judged cacheable (oracle saw x-cache).
         self.assertEqual(cs["summary"]["cacheable_urls"], 1)
+
+
+class TestFalsePositiveRegressions(unittest.TestCase):
+    """Every fake here is NOT vulnerable, and each was scored at or above the default
+    0.8 floor (so written to the graph) before the post-poison control, the
+    param-borne body rule and the explicit-MISS rule existed."""
+
+    _SCHEME = {"url": "https://shop/archive", "vector_type": "header",
+               "vector_name": "X-Forwarded-Proto", "payload_kind": "scheme",
+               "impact_hint": "open_redirect", "technique": "unkeyed_header"}
+    # Node 217734: fat GET, utm_source in the request body, a body-only differential.
+    _FAT_GET = {"url": "https://shop/2021/01/", "vector_type": "fat_get",
+                "vector_name": "utm_source", "payload_kind": "value",
+                "impact_hint": "reflected", "technique": "fat_get"}
+    _PARAM = {"url": "https://shop/landing", "vector_type": "param",
+              "vector_name": "utm_source", "payload_kind": "value",
+              "impact_hint": "reflected", "technique": "unkeyed_param"}
+
+    def _assert_below_floor(self, rec):
+        conf, _ = scoring.score_finding(rec)
+        self.assertLess(conf, 0.8, rec)
+
+    def test_page_drift_between_baseline_and_poison_is_not_poisoning(self):
+        rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"}, TimeDriftSession(), {})
+        self.assertEqual(rec["differential_change"], "body")  # the drift looks like a change...
+        self.assertEqual(rec["control_check"], "baseline_drift")  # ...a fresh clean slot shows too
+        self.assertFalse(rec["persisted_on_clean"])
+        self._assert_below_floor(rec)
+
+    def test_node_217734_fat_get_body_drift_is_not_poisoning(self):
+        rec = confirm.confirm_vector(self._FAT_GET, {"param": "rdmncb"}, TimeDriftSession(), {})
+        self.assertEqual(rec["differential_change"], "")  # unechoed body change: not for a param
+        self.assertFalse(rec["persisted_on_clean"])
+        self._assert_below_floor(rec)
+
+    def test_param_body_change_without_echo_is_ignored_even_when_cached(self):
+        # The same body swap that counts for a header proves nothing for a parameter.
+        class _ParamBodySwap(_CachedOrigin):
+            def render(self, url, headers, data):
+                return 200, "<maintenance/>" if "utm_source=" in url else "<live/>"
+        rec = confirm.confirm_vector(self._PARAM, {"param": "rdmncb"}, _ParamBodySwap(), {})
+        self.assertEqual(rec["differential_change"], "")
+        self._assert_below_floor(rec)
+
+    def test_one_off_origin_error_is_not_cpdos(self):
+        rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"}, FlakyPoisonSession(), {})
+        self.assertEqual(rec["differential_change"], "status")
+        self.assertEqual(rec["control_check"], "not_reproduced")
+        self._assert_below_floor(rec)
+
+    def test_waf_block_mid_sequence_is_not_cpdos(self):
+        rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"}, WafBlockSession(), {})
+        self.assertEqual(rec["differential_change"], "status")
+        self.assertEqual(rec["control_check"], "baseline_drift")
+        self._assert_below_floor(rec)
+
+    def test_origin_state_replaying_the_canary_is_not_poisoning(self):
+        rec = confirm.confirm_vector(self._PARAM, {"param": "rdmncb"}, OriginStateSession(), {})
+        self.assertTrue(rec["reflected_in_baseline"])
+        self.assertEqual(rec["control_check"], "canary_on_fresh_slot")
+        self.assertFalse(rec["persisted_reflected"])
+        self._assert_below_floor(rec)
+
+    def test_explicit_miss_on_the_clean_read_is_rejected(self):
+        conf, tier = scoring.score_finding({
+            "reflected_in_baseline": True, "persisted_on_clean": True,
+            "persisted_reflected": True, "clean_cache_state": "miss",
+            "repeated_ok": True, "stable": True})
+        self.assertEqual(tier, "Rejected")
+
+    def test_behavioural_change_needs_an_explicit_hit(self):
+        base = {"persisted_on_clean": True, "persisted_reflected": False,
+                "persisted_differential": True, "repeated_ok": True, "stable": True}
+        self.assertLess(scoring.score_finding({**base, "clean_cache_state": "unknown"})[0], 0.8)
+        self.assertEqual(scoring.score_finding({**base, "clean_cache_state": "hit"})[1], "Strong")
+
+    def test_reflected_canary_behind_a_silent_cache_stays_strong(self):
+        conf, tier = scoring.score_finding({
+            "reflected_in_baseline": True, "persisted_on_clean": True,
+            "persisted_reflected": True, "clean_cache_state": "unknown",
+            "repeated_ok": True, "stable": True})
+        self.assertEqual(tier, "Strong")
+        self.assertGreaterEqual(conf, 0.8)
+
+    def test_age_only_cache_keeps_a_real_reflected_poisoning(self):
+        # A cache that marks hits only with Age (0 within the same second): the clean
+        # read is not an explicit MISS, so our canary on it still makes Strong.
+        class _AgeOnlyCache(_CachedOrigin):
+            def get(self, url, headers=None, data=None, **kwargs):
+                if url in self.store:
+                    return FakeResponse(self.store[url][1], {"age": "0"})
+                xfh = (headers or {}).get("X-Forwarded-Host", "cdn.shop")
+                self.store[url] = (200, f"<link href=//{xfh}/s.css>")
+                return FakeResponse(self.store[url][1], {})
+
+        header = {"url": "https://shop/home", "vector_type": "header",
+                  "vector_name": "X-Forwarded-Host", "payload_kind": "host",
+                  "impact_hint": "open_redirect"}
+        rec = confirm.confirm_vector(header, {"param": "cb"}, _AgeOnlyCache(), {})
+        self.assertEqual(rec["clean_cache_state"], "unknown")
+        self.assertEqual(scoring.score_finding(rec)[1], "Strong")
+
+    def test_a_drift_seen_by_one_vector_untrusts_the_dimension_for_the_url(self):
+        sess = TimeDriftSession(flip_after=confirm._PROFILE_SAMPLES)  # the profile renders agree
+        profile = confirm.clean_profile(self._SCHEME["url"], "rdmncb", sess)
+        self.assertIn("body", profile["trusted"])
+        confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"}, sess, {}, baseline=profile)
+        self.assertNotIn("body", profile["trusted"])  # later vectors of the URL skip it
+        self.assertFalse(profile["stable"])
+
+    def test_a_failed_reproduction_untrusts_the_dimension_for_the_url(self):
+        # The one-off 503 lands on the poison (render 9, after the 8 profile renders);
+        # the reproduction gets the page's normal 200, so status flaps on this URL.
+        sess = FlakyPoisonSession(fail_on_render=confirm._PROFILE_SAMPLES + 1)
+        profile = confirm.clean_profile(self._SCHEME["url"], "rdmncb", sess)
+        self.assertIn("status", profile["trusted"])
+        rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"}, sess, {}, baseline=profile)
+        self.assertEqual(rec["control_check"], "not_reproduced")
+        self.assertNotIn("status", profile["trusted"])
+
+    def test_rate_limited_control_rejects_without_untrusting_the_url(self):
+        class _RateLimitedControl(_CachedOrigin):
+            def render(self, url, headers, data):
+                if headers.get("X-Forwarded-Proto"):
+                    return 200, "<maintenance/>"
+                if self.renders == confirm._PROFILE_SAMPLES + 2:  # profile, poison, control
+                    return 429, "slow down"
+                return 200, "<live/>"
+
+        sess = _RateLimitedControl()
+        profile = confirm.clean_profile(self._SCHEME["url"], "rdmncb", sess)
+        rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"}, sess, {}, baseline=profile)
+        self.assertEqual(rec["control_check"], "rate_limited")
+        self._assert_below_floor(rec)
+        self.assertIn("body", profile["trusted"])  # a rate limit is not the page moving
+
+    def test_reflected_canary_seen_once_is_not_strong_behind_a_silent_cache(self):
+        conf, tier = scoring.score_finding({
+            "reflected_in_baseline": True, "persisted_on_clean": True,
+            "persisted_reflected": True, "clean_cache_state": "unknown",
+            "repeated_ok": False, "stable": True})
+        self.assertLess(conf, 0.8)
+
+    def test_malformed_bracketed_host_does_not_raise(self):
+        self.assertFalse(confirm._script_src_canary('<script src="https://[cdn]/a.js"></script>', "rdmnx"))
+        self.assertFalse(confirm._redirects_to_canary("https://[bad/x", "rdmnx"))
+
+    def test_wcvs_framework_param_keeps_its_body_detection(self):
+        # __nextDataReq switches Next.js to its JSON data response: a body change with
+        # no echo. Surfaced by WCVS first, it used to arrive as a generic param.
+        class _NextDataCache(_CachedOrigin):
+            def get(self, url, headers=None, data=None, **kwargs):
+                import re as _re
+                key = _re.sub(r"[?&]__nextDataReq=[^&]*", "", url)  # the cache ignores it
+                if key in self.store:
+                    return FakeResponse(self.store[key][1], {"x-cache": "hit", "age": "2"})
+                body = '{"pageProps":{}}' if "__nextDataReq=" in url else "<html>page</html>"
+                self.store[key] = (200, body)
+                return FakeResponse(body, {"x-cache": "miss"})
+
+        vec = scanner._wcvs_vector("https://shop/home", {"technique": "Parameter Cloaking",
+                                                         "vector_name": "__nextDataReq"})
+        self.assertEqual(vec["technique"], "framework_next")
+        rec = confirm.confirm_vector(vec, {"param": "rdmncb"}, _NextDataCache(), {})
+        self.assertEqual(scoring.score_finding(rec)[1], "Strong")
+
+    def test_real_poisonings_pass_the_control(self):
+        header = {"url": "https://shop/home", "vector_type": "header",
+                  "vector_name": "X-Forwarded-Host", "payload_kind": "host",
+                  "impact_hint": "open_redirect"}
+        rec = confirm.confirm_vector(header, {"param": "cb"}, VulnerableCacheSession(), {})
+        self.assertEqual(rec["control_check"], "passed")
+        self.assertEqual(scoring.score_finding(rec)[1], "Confirmed")
+        rec = confirm.confirm_vector(self._SCHEME, {"param": "cb"}, BodyPoisonCacheSession(), {})
+        self.assertEqual(rec["control_check"], "passed")
+        self.assertEqual(scoring.score_finding(rec)[1], "Strong")
+
+    def test_fat_get_curl_carries_the_body(self):
+        # The stored reproduction was a plain GET, so validators re-tested the param in
+        # the query string instead of the body.
+        vec = {"url": "https://shop/search", "vector_type": "fat_get", "vector_name": "q",
+               "payload_kind": "value", "impact_hint": "reflected"}
+        rec = confirm.confirm_vector(vec, {"param": "rdmncb"}, FatGetCacheSession("q"), {})
+        curl = rec["evidence"]["curl_verify"]
+        self.assertIn("-X GET", curl)
+        self.assertIn(f"--data 'q={rec['evidence']['canary']}'", curl)
+
+
+class TestScannerIsolationAndProfile(unittest.TestCase):
+    _URL = "https://shop.test/2021/01/"
+
+    def _run(self, session):
+        orig_s, orig_w = scanner._build_retry_session, scanner.wcvs_runner.run_wcvs
+        scanner._build_retry_session = lambda *a, **k: session
+        scanner.wcvs_runner.run_wcvs = lambda urls, s, **k: []
+        try:
+            rd = {"http_probe": {"by_url": {self._URL: {"url": self._URL, "status_code": 200}}},
+                  "resource_enum": {"endpoints": {}, "parameters": {}, "discovered_urls": []},
+                  "metadata": {}}
+            return scanner.run_cache_scan(rd, {"WEB_CACHE_POISON_ENABLED": True})["cache_scan"]
+        finally:
+            scanner._build_retry_session, scanner.wcvs_runner.run_wcvs = orig_s, orig_w
+
+    def test_query_ignoring_cache_is_skipped_before_any_poison(self):
+        sess = QueryIgnoringCacheSession()
+        cs = self._run(sess)
+        self.assertEqual(cs["summary"]["total_findings"], 0)
+        self.assertIn("cannot be isolated", cs["by_target"][self._URL]["skipped"])
+        self.assertEqual(sess.poison_requests, 0)  # nothing reached the real entry
+
+    def test_two_variant_page_yields_no_findings(self):
+        # Per-vector baseline pairs agree half the time on this page; the shared
+        # per-URL profile sees both variants and stops trusting the body.
+        cs = self._run(PairedVariantSession())
+        self.assertEqual(cs["summary"]["total_findings"], 0)
+        self.assertEqual(cs["summary"]["cacheable_urls"], 1)
+
+    def test_shared_profile_is_what_stops_a_scripted_variant_page(self):
+        # A vector's own two-slot baseline is fooled: this alone writes a false finding...
+        alone = confirm.confirm_vector(TestFalsePositiveRegressions._SCHEME, {"param": "rdmncb"},
+                                       ScriptedVariantSession(), {})
+        self.assertEqual(scoring.score_finding(alone)[1], "Strong")
+        # ...while the scan hands every vector the URL's one shared profile.
+        seen = []
+        orig = confirm.confirm_vector
+
+        def spy(*args, baseline=None, **kwargs):
+            seen.append(baseline)
+            return orig(*args, baseline=baseline, **kwargs)
+
+        confirm.confirm_vector = spy
+        try:
+            cs = self._run(ScriptedVariantSession())
+        finally:
+            confirm.confirm_vector = orig
+        self.assertEqual(cs["summary"]["total_findings"], 0)
+        self.assertTrue(seen and seen[0] is not None)
+        self.assertTrue(all(b is seen[0] for b in seen))
+
+    def test_clean_profile_marks_a_flapping_body_untrusted(self):
+        prof = confirm.clean_profile(self._URL, "rdmncb", PairedVariantSession())
+        self.assertNotIn("body", prof["trusted"])
+        self.assertFalse(prof["stable"])
+        prof = confirm.clean_profile(self._URL, "rdmncb", BodyPoisonCacheSession())
+        self.assertEqual(prof["trusted"], {"status", "location", "body"})
+
+
+class TestStatelessSession(unittest.TestCase):
+    @staticmethod
+    def _offer_cookie(session):
+        import http.client
+        import io
+
+        class _Raw:
+            pass
+
+        raw, orig = _Raw(), _Raw()
+        orig.msg = http.client.parse_headers(io.BytesIO(b"Set-Cookie: utm_source=rdmnab; Path=/\r\n\r\n"))
+        raw._original_response = orig
+        req = requests.Request("GET", "https://shop.test/").prepare()
+        requests.cookies.extract_cookies_to_jar(session.cookies, req, raw)
+
+    def test_scanner_session_never_stores_a_cookie(self):
+        plain = requests.Session()
+        s = scanner._build_retry_session()
+        try:
+            self._offer_cookie(plain)
+            self.assertEqual(len(plain.cookies), 1)  # the harness really sets one...
+            self._offer_cookie(s)
+            self.assertEqual(len(s.cookies), 0)      # ...and the scanner's session refuses it
+        finally:
+            plain.close()
+            s.close()
 
 
 class TestGraphContract(unittest.TestCase):
@@ -1326,6 +1846,67 @@ class TestGraphContract(unittest.TestCase):
         f = self._finding()
         self.assertEqual(set(f.keys()) - KNOWN_FINDING_KEYS, set())
         self.assertEqual(set(f["evidence"].keys()) - KNOWN_EVIDENCE_KEYS, set())
+
+    def test_real_confirmation_keys_within_graph_contract(self):
+        # Built from a live confirm_vector record, so evidence the confirmation adds is
+        # checked too, not only the hand-written dict above.
+        try:
+            from graph_db.mixins.cache_mixin import KNOWN_EVIDENCE_KEYS
+        except Exception as e:  # pragma: no cover - graph_db deps absent
+            self.skipTest(f"graph_db import unavailable: {e}")
+        vec = {"url": "https://shop/home", "vector_type": "header", "vector_name": "X-Forwarded-Host",
+               "payload_kind": "host", "impact_hint": "open_redirect", "source": "hypothesis",
+               "technique": "unkeyed_header"}
+        rec = confirm.confirm_vector(vec, {"param": "rdmncb"}, VulnerableCacheSession(), {})
+        f = normalizers.build_finding(vec, rec, 0.97, "Confirmed", "stored_xss", "critical", 9.3, [])
+        self.assertEqual(set(f["evidence"]) - KNOWN_EVIDENCE_KEYS, set())
+        self.assertEqual(f["evidence"]["clean_cache_state"], "hit")
+        self.assertEqual(f["evidence"]["control_check"], "passed")
+        self.assertEqual(f["evidence"]["xss_context"], "proven")
+
+    def test_description_does_not_overstate_the_tier(self):
+        try:
+            from graph_db.mixins.cache_mixin import CacheMixin
+        except Exception as e:  # pragma: no cover - graph_db deps absent
+            self.skipTest(f"graph_db import unavailable: {e}")
+
+        class _Session:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, query, **params):
+                self.calls.append(params)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Driver:
+            def __init__(self):
+                self.s = _Session()
+
+            def session(self):
+                return self.s
+
+        writer = CacheMixin()
+        writer.driver = _Driver()
+        descriptions = {}
+        for tier in ("Confirmed", "Strong"):
+            writer.driver.s.calls.clear()
+            writer.update_graph_from_cache_scan(
+                {"cache_scan": {"findings": [self._finding_with_tier(tier)]}}, "u", "p")
+            descriptions[tier] = writer.driver.s.calls[0]["props"]["description"]
+        self.assertIn("confirmed", descriptions["Confirmed"])
+        self.assertNotIn("confirmed", descriptions["Strong"])
+        self.assertIn("likely", descriptions["Strong"])
+        self.assertIn("detected by differential", descriptions["Strong"])
+
+    def _finding_with_tier(self, tier):
+        f = self._finding()
+        f["confidence_tier"] = tier
+        return f
 
     def test_detection_mode_present_for_reflected_default(self):
         # A legacy confirmation without detection_mode still yields a valid finding.
