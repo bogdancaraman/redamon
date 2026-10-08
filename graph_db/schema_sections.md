@@ -874,6 +874,18 @@ Package properties on dependency and framework findings:
    - evidence (string): matched pattern or code snippet
    - source_url (string): JS file where finding was discovered
    - source (string): always "js_recon"
+   Source-map findings (source_map_exposure, source_map_reference) also carry:
+   - map_url (string), accessible (boolean), discovery_method (string): comment, header or probe
+   - fetch_result (string): ok for a served map; http_401 / http_403 for a referenced map that refused access
+   - files_count (integer), first_party_files (integer): sources in the map, and those outside node_modules and the bundler runtime
+   - has_sources_content (boolean): the map embeds the target's own source text
+   - source_files (list[string]), secrets_in_source (integer)
+   - third_party (boolean): the script is served from a host outside the target
+   DOM-sink findings (dom_sink) also carry:
+   - line (integer), column (integer): where the sink matched in the JS file
+   - user_source (string): the user-controlled source found near the sink (location.hash, e.data, ...), absent when none
+   - vendor (boolean): the file is library/runtime/plugin code or served from a third-party host
+   - nominal_severity (string): the sink's severity before the source and vendor checks lowered it
 
 Graph hierarchy: Domain/BaseURL -> JS file node -> findings/secrets/endpoints
 - `(Domain)-[:HAS_JS_FILE]->(JsReconFinding {finding_type: 'js_file'})` for uploaded files

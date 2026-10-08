@@ -33,6 +33,9 @@ DEFAULT_SOURCEMAP_PROBE_PATHS = [
 ]
 
 
+_REFERENCE_WORTH_REPORTING = frozenset({'http_401', 'http_403'})
+
+
 def check_sourcemap_comment(content: str) -> Optional[str]:
     """
     Check last lines of JS content for sourceMappingURL comment.
@@ -101,21 +104,62 @@ def _build_probe_urls(js_url: str, custom_paths: Optional[list] = None) -> list:
     return urls
 
 
-def _fetch_sourcemap(url: str, timeout: int = 10) -> Optional[dict]:
-    """Fetch and parse a source map JSON file. Uses HEAD to skip guaranteed misses."""
+def _is_valid_sourcemap(data) -> bool:
+    """A Source Map v3: `version` 3 with `sources` + string `mappings`, or an
+    index map with `sections`. A JSON API catch-all (`{"error": ...}`) or a
+    manifest that merely lists `sources` is not one."""
+    if not isinstance(data, dict) or str(data.get('version')) != '3':
+        return False
+    if isinstance(data.get('sections'), list):
+        return True
+    return isinstance(data.get('sources'), list) and isinstance(data.get('mappings'), str)
+
+
+# Anti-JSON-hijacking prefix some servers put in front of JSON bodies.
+_XSSI_PREFIX = re.compile(r"^\s*\)\]\}'?[^\n]*\n?")
+
+
+def _parse_sourcemap_body(text: str, outcome: dict) -> Optional[dict]:
+    if text.lstrip().startswith('<'):
+        outcome['reason'] = 'html'
+        return None
+    try:
+        data = json.loads(_XSSI_PREFIX.sub('', text, count=1))
+    except ValueError:
+        outcome['reason'] = 'not_json'
+        return None
+    if not _is_valid_sourcemap(data):
+        outcome['reason'] = 'invalid_schema'
+        return None
+    outcome['reason'] = 'ok'
+    return data
+
+
+def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None) -> Optional[dict]:
+    """Fetch and parse a source map JSON file. Uses HEAD to skip guaranteed misses.
+
+    `outcome`, when given, receives `reason` (and `status` for an HTTP
+    answer): ok, html, not_json, invalid_schema, not_found, unreachable,
+    unsafe or http_<status>. A single-page app answers every unknown path,
+    `.map` included, with its HTML shell and a 200, so a 200 alone proves
+    nothing: the body must parse as a v3 source map.
+    """
+    outcome = outcome if outcome is not None else {}
     if url.startswith('data:'):
         # Inline base64-encoded source map
         try:
             import base64
             _, data = url.split(',', 1)
             content = base64.b64decode(data).decode('utf-8')
-            return json.loads(content)
         except Exception:
+            outcome['reason'] = 'not_json'
             return None
+        return _parse_sourcemap_body(content, outcome)
 
     # STRIDE I14: source-map URLs are derived from target JS; refuse to fetch
     # ones that resolve to cloud metadata / loopback / an internal host.
     if not is_url_safe_to_probe(url):
+        outcome['reason'] = 'unsafe'
         return None
 
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -126,25 +170,67 @@ def _fetch_sourcemap(url: str, timeout: int = 10) -> Optional[dict]:
         # Skip definite misses without paying for a body download. Other statuses
         # (200, 403, 405, 5xx) fall through to GET — some servers misreport HEAD.
         if head.status_code in (404, 410):
+            outcome.update(reason='not_found', status=head.status_code)
             return None
     except requests.RequestException:
         # Connection-level failure on HEAD: GET would fail too.
+        outcome['reason'] = 'unreachable'
         return None
 
     try:
         resp = requests.get(url, timeout=timeout, headers=headers)
-        if resp.status_code == 200:
-            content_type = resp.headers.get('Content-Type', '')
-            # Source maps should be JSON
-            if 'json' in content_type or 'javascript' in content_type or 'text' in content_type:
-                data = resp.json()
-                if (isinstance(data, dict)
-                        and 'version' in data
-                        and isinstance(data.get('sources'), list)):
-                    return data
+    except requests.RequestException:
+        outcome['reason'] = 'unreachable'
+        return None
+    outcome['status'] = resp.status_code
+    if resp.status_code in (404, 410):
+        outcome['reason'] = 'not_found'
+        return None
+    if resp.status_code != 200:
+        outcome['reason'] = f'http_{resp.status_code}'
+        return None
+    # Any type but HTML: S3 and CDNs often serve .map as octet-stream.
+    if 'text/html' in (resp.headers.get('Content-Type') or '').lower():
+        outcome['reason'] = 'html'
+        return None
+    try:
+        return _parse_sourcemap_body(resp.text, outcome)
     except Exception:
-        pass
-    return None
+        outcome['reason'] = 'not_json'
+        return None
+
+
+# Package-manager and bundler-runtime sources: library code the target ships
+# but did not write. Matched after the `webpack:///`-style scheme is removed.
+_VENDOR_SOURCE_RE = re.compile(
+    r'(?:^|/)(?:node_modules|bower_components|jspm_packages)/'
+    r'|^(?:\./)?webpack/(?:bootstrap|runtime|universalModuleDefinition)'
+    r'|^\(webpack\)|^external[ "]|^~/',
+    re.IGNORECASE,
+)
+_SOURCE_SCHEME = re.compile(r'^[a-z][a-z0-9+.-]*:/*', re.IGNORECASE)
+
+
+def _is_vendor_source(source: str) -> bool:
+    path = _SOURCE_SCHEME.sub('', source or '').lstrip('./')
+    return bool(_VENDOR_SOURCE_RE.search(path)) or bool(_VENDOR_SOURCE_RE.search(source or ''))
+
+
+def _map_sources(map_data: dict) -> tuple:
+    """(sources, sourcesContent) of a flat map, or of every inline section of
+    an index map."""
+    if isinstance(map_data.get('sections'), list):
+        sources, contents = [], []
+        for section in map_data['sections']:
+            inner = (section or {}).get('map') if isinstance(section, dict) else None
+            if isinstance(inner, dict):
+                s = [x for x in (inner.get('sources') or []) if isinstance(x, str)]
+                c = list(inner.get('sourcesContent') or [])
+                sources.extend(s)
+                contents.extend(c + [None] * (len(s) - len(c)))
+        return sources, contents
+    sources = [x for x in (map_data.get('sources') or []) if isinstance(x, str)]
+    return sources, list(map_data.get('sourcesContent') or [])
 
 
 def analyze_sourcemap(
@@ -162,11 +248,26 @@ def analyze_sourcemap(
         js_url: URL of the original JS file
         scan_content_func: Optional function(content, source_url) -> list to scan source content
 
+    Severity follows what the map discloses about the target's own code:
+    high when it embeds first-party source text, medium for first-party file
+    paths only, low when every source is a library (node_modules, the
+    bundler runtime), which is public code.
+
     Returns:
         dict with: js_url, map_url, sources, source_count, secrets_in_source, file_paths
     """
-    sources = map_data.get('sources', [])
-    sources_content = map_data.get('sourcesContent', [])
+    sources, sources_content = _map_sources(map_data)
+    first_party = [i for i, s in enumerate(sources) if not _is_vendor_source(s)]
+    first_party_content = any(
+        isinstance(sources_content[i], str) and sources_content[i].strip()
+        for i in first_party if i < len(sources_content)
+    )
+    if first_party_content:
+        severity = 'high'
+    elif first_party:
+        severity = 'medium'
+    else:
+        severity = 'low'
 
     finding_id = hashlib.sha256(f"srcmap:{js_url}:{map_url}".encode()).hexdigest()[:16]
     result = {
@@ -176,17 +277,21 @@ def analyze_sourcemap(
         'accessible': True,
         'discovery_method': 'probe',
         'files_count': len(sources),
-        'source_files': sources[:100],  # Cap at 100 for storage
+        'first_party_files': len(first_party),
+        'has_sources_content': first_party_content,
+        'source_files': [sources[i] for i in first_party][:100] or sources[:100],
         'secrets_in_source': 0,
         'secrets': [],
-        'severity': 'high' if sources_content else 'medium',
+        'severity': severity,
         'finding_type': 'source_map_exposure',
     }
 
-    # If sourcesContent is available, scan for secrets
+    # If sourcesContent is available, scan the target's own files for secrets;
+    # a library's bundled source is public and full of example keys.
     if sources_content and scan_content_func:
+        own = set(first_party)
         for i, content in enumerate(sources_content):
-            if not content or not isinstance(content, str):
+            if not content or not isinstance(content, str) or i not in own:
                 continue
             source_name = sources[i] if i < len(sources) else f"source_{i}"
             findings = scan_content_func(content, f"{map_url}:{source_name}")
@@ -293,20 +398,28 @@ def discover_and_analyze_sourcemaps(
             # Fetch and analyze the discovered source map
             if not _claim(map_url):
                 return []
-            map_data = _fetch_sourcemap(map_url, timeout=timeout)
+            outcome: dict = {}
+            map_data = _fetch_sourcemap(map_url, timeout=timeout, outcome=outcome)
             if map_data:
                 result = analyze_sourcemap(map_data, map_url, js_url, scan_content_func)
                 result['discovery_method'] = discovery_method
                 return [result]
-            # Source map referenced but not accessible
+            # Referenced but not served. Only an access refusal says the map
+            # exists somewhere; a 404, an SPA's HTML shell or a JSON error page
+            # says nothing, and reporting those buried the board in rows.
+            if outcome.get('reason') not in _REFERENCE_WORTH_REPORTING:
+                return []
             finding_id = hashlib.sha256(f"srcmap-ref:{js_url}:{map_url}".encode()).hexdigest()[:16]
             return [{
                 'id': finding_id,
                 'js_url': js_url,
                 'map_url': map_url,
                 'accessible': False,
+                'fetch_result': outcome['reason'],
                 'discovery_method': discovery_method,
                 'files_count': 0,
+                'first_party_files': 0,
+                'has_sources_content': False,
                 'source_files': [],
                 'secrets_in_source': 0,
                 'secrets': [],

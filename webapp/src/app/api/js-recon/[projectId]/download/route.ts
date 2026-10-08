@@ -8,6 +8,13 @@ import { notMuted } from '@/lib/graphMute'
 
 const PROJECT_ID_RE = /^[a-zA-Z0-9_-]+$/
 
+/** A neo4j Integer arrives as {low, high}; absent stays null. */
+function toNum(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'object' && 'low' in (value as object)) return (value as { low: number }).low
+  return typeof value === 'number' ? value : null
+}
+
 // Simple in-memory cache (same pattern as graph route)
 interface CacheEntry {
   data: JsReconResponse
@@ -106,6 +113,18 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
              jf.times_seen AS timesSeen,
              jf.sample_urls AS sampleUrls,
              jf.potential_idor AS potentialIdor,
+             jf.map_url AS mapUrl,
+             jf.accessible AS accessible,
+             jf.fetch_result AS fetchResult,
+             jf.discovery_method AS discoveryMethod,
+             jf.files_count AS filesCount,
+             jf.first_party_files AS firstPartyFiles,
+             jf.source_files AS sourceFiles,
+             jf.secrets_in_source AS secretsInSource,
+             jf.third_party AS thirdParty,
+             jf.line AS line,
+             jf.user_source AS userSource,
+             jf.vendor AS vendor,
              jf.updated_at AS updatedAt
       `,
       { pid: projectId }
@@ -194,9 +213,19 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
           })
           break
         case 'source_map_exposure':
+        case 'source_map_reference':
           source_maps.push({
             ...base,
             js_url: base.source_url,
+            map_url: record.get('mapUrl') ?? null,
+            accessible: record.get('accessible') ?? null,
+            fetch_result: record.get('fetchResult') ?? null,
+            discovery_method: record.get('discoveryMethod') ?? null,
+            files_count: toNum(record.get('filesCount')),
+            first_party_files: toNum(record.get('firstPartyFiles')),
+            source_files: record.get('sourceFiles') ?? [],
+            secrets_in_source: toNum(record.get('secretsInSource')),
+            third_party: record.get('thirdParty') ?? null,
           })
           break
         case 'dom_sink':
@@ -204,6 +233,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             ...base,
             type: base.title,
             pattern: base.evidence,
+            description: base.detail,
+            line: toNum(record.get('line')),
+            user_source: record.get('userSource') ?? null,
+            vendor: record.get('vendor') ?? null,
           })
           break
         case 'framework':

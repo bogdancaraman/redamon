@@ -17,6 +17,52 @@ from graph_db.mixins.recon.scope import build_host_scope, host_in_scope
 _VETTED_HOSTNAME_SOURCES = ("js_recon", "tlsx", "certificate_san")
 
 
+def _finding_type_props(data_key: str, finding: dict) -> dict:
+    """The fields one finding kind carries beyond the shared title/detail/
+    evidence, flattened to scalars and string lists (a property cannot hold a
+    map). A source map's own secret hits stay a count: they are pattern
+    matches inside the map's source text, not separate Secret nodes."""
+    if data_key == "source_maps":
+        map_url = finding.get("map_url") or ""
+        first_party = int(finding.get("first_party_files") or 0)
+        files = int(finding.get("files_count") or 0)
+        if finding.get("accessible"):
+            detail = (
+                f"Source map served at {map_url}: {files} source file(s), "
+                f"{first_party} of them the target's own"
+                + (", with their source text embedded" if finding.get("has_sources_content") else "")
+                + (" (the script is served from a third-party host)" if finding.get("third_party") else "")
+            )
+        else:
+            detail = (
+                f"Script references {map_url}, which answered "
+                f"{finding.get('fetch_result') or 'without a source map'}"
+            )
+        return {
+            "map_url": map_url,
+            "accessible": bool(finding.get("accessible")),
+            "fetch_result": finding.get("fetch_result") or ("ok" if finding.get("accessible") else None),
+            "discovery_method": finding.get("discovery_method"),
+            "files_count": files,
+            "first_party_files": first_party,
+            "has_sources_content": bool(finding.get("has_sources_content")),
+            "source_files": [s for s in (finding.get("source_files") or []) if isinstance(s, str)][:100],
+            "secrets_in_source": int(finding.get("secrets_in_source") or 0),
+            "third_party": bool(finding.get("third_party")),
+            "detail": detail,
+            "evidence": map_url[:500],
+        }
+    if data_key == "dom_sinks":
+        return {
+            "line": finding.get("line"),
+            "column": finding.get("column"),
+            "user_source": finding.get("user_source"),
+            "vendor": bool(finding.get("vendor")),
+            "nominal_severity": finding.get("nominal_severity"),
+        }
+    return {}
+
+
 def js_endpoint_scope(recon_data: dict) -> set:
     """Hosts a JS-extracted Endpoint may be stored under; empty set = no filter.
 
@@ -282,7 +328,11 @@ class JsReconMixin:
                             "finding_type": finding.get("finding_type", finding_type),
                             "severity": finding.get("severity", "info"),
                             "confidence": finding.get("confidence", "medium"),
-                            "title": finding.get("title", finding.get("type", finding_type)),
+                            # The finding's own type before the loop default:
+                            # an unreachable map's row is source_map_reference,
+                            # and titling it source_map_exposure made a 404
+                            # read as a disclosure.
+                            "title": finding.get("title", finding.get("type", finding.get("finding_type", finding_type))),
                             "detail": finding.get("detail", finding.get("content", finding.get("description", ""))),
                             "evidence": finding.get("evidence", finding.get("pattern", finding.get("content", "")))[:500],
                             # package_name / package_version, NOT name / version:
@@ -300,6 +350,7 @@ class JsReconMixin:
                             "source": "js_recon",
                             "discovered_at": scan_ts,
                         }
+                        props.update(_finding_type_props(data_key, finding))
 
                         session.run(
                             "MERGE (jf:JsReconFinding {id: $id, user_id: $props.user_id, project_id: $props.project_id}) SET jf += $props, jf.updated_at = datetime()",

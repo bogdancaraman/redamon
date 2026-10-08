@@ -336,9 +336,9 @@ def _is_third_party_url(url: str, first_party: _FirstParty) -> bool:
 
 
 def _downgrade_third_party_findings(results: dict, combined_result: dict) -> None:
-    """A DOM sink in a script served from someone else's host (an analytics
-    or marketing loader the page embeds) is that vendor's code, not the
-    target's: keep it visible, at info."""
+    """A DOM sink in, or a source map of, a script served from someone else's
+    host (an analytics or marketing loader the page embeds) is that vendor's
+    code, not the target's: keep it visible, at info."""
     first_party = _first_party_scope(combined_result)
     for sink in results.get('dom_sinks') or []:
         if sink.get('vendor') or not _is_third_party_url(sink.get('source_url', ''), first_party):
@@ -347,6 +347,10 @@ def _downgrade_third_party_findings(results: dict, combined_result: dict) -> Non
         sink['severity'] = 'info'
         sink['confidence'] = 'low'
         sink['description'] = re.sub(r' \([^()]*\)$', '', sink.get('description', '')) + ' (in a third-party script)'
+    for source_map in results.get('source_maps') or []:
+        if _is_third_party_url(source_map.get('js_url', ''), first_party):
+            source_map['third_party'] = True
+            source_map['severity'] = 'info'
 
 
 def _endpoint_probe_method(extracted_method: str) -> str:
