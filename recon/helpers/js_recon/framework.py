@@ -127,22 +127,29 @@ FRAMEWORK_SIGNATURES = [
 ]
 
 # ========== DOM SINK PATTERNS ==========
-# Each: (pattern, sink_type, severity, description)
+# Each: (pattern, sink_type, severity, description). The severity is the
+# ceiling, kept only when a user-controlled source sits near the sink (see
+# detect_dom_sinks); a sink is not a vulnerability on its own.
+#
+# `eval`/`Function` must not follow an identifier character or a dot, so
+# `_eval(`, `math.eval(` and `isFunction(` are not the global; the explicit
+# `window.`/`globalThis.`/`self.` forms still are.
+_GLOBAL_CALLEE = r'(?:(?<![\w$.])|(?<=window\.)|(?<=globalThis\.)|(?<=self\.))'
 DOM_SINK_PATTERNS = [
-    # Direct HTML injection
-    (re.compile(r'\.innerHTML\s*='), 'innerHTML', 'high', 'Direct HTML injection via innerHTML'),
-    (re.compile(r'\.outerHTML\s*='), 'outerHTML', 'high', 'Direct HTML injection via outerHTML'),
+    # Direct HTML injection. `(?!=)` keeps comparisons (`innerHTML == ""`) out.
+    (re.compile(r'\.innerHTML\s*=(?!=)'), 'innerHTML', 'high', 'Direct HTML injection via innerHTML'),
+    (re.compile(r'\.outerHTML\s*=(?!=)'), 'outerHTML', 'high', 'Direct HTML injection via outerHTML'),
     (re.compile(r'document\.write\s*\('), 'document.write', 'high', 'DOM injection via document.write'),
     (re.compile(r'document\.writeln\s*\('), 'document.writeln', 'high', 'DOM injection via document.writeln'),
 
     # Code execution
-    (re.compile(r'[^a-zA-Z]eval\s*\('), 'eval', 'critical', 'Arbitrary code execution via eval()'),
-    (re.compile(r'[^a-zA-Z]Function\s*\('), 'Function', 'critical', 'Arbitrary code execution via Function()'),
+    (re.compile(_GLOBAL_CALLEE + r'eval\s*\('), 'eval', 'critical', 'Arbitrary code execution via eval()'),
+    (re.compile(_GLOBAL_CALLEE + r'Function\s*\('), 'Function', 'critical', 'Arbitrary code execution via Function()'),
     (re.compile(r'setTimeout\s*\(\s*["\']'), 'setTimeout', 'high', 'Code execution via setTimeout with string'),
     (re.compile(r'setInterval\s*\(\s*["\']'), 'setInterval', 'high', 'Code execution via setInterval with string'),
 
     # URL/navigation manipulation
-    (re.compile(r'location\.href\s*='), 'location.href', 'medium', 'URL redirection via location.href'),
+    (re.compile(r'location\.href\s*=(?!=)'), 'location.href', 'medium', 'URL redirection via location.href'),
     (re.compile(r'location\.assign\s*\('), 'location.assign', 'medium', 'URL redirection via location.assign'),
     (re.compile(r'location\.replace\s*\('), 'location.replace', 'medium', 'URL redirection via location.replace'),
     (re.compile(r'window\.open\s*\('), 'window.open', 'medium', 'Window opening -- potential phishing vector'),
@@ -150,14 +157,89 @@ DOM_SINK_PATTERNS = [
     # Cross-origin messaging
     (re.compile(r'postMessage\s*\('), 'postMessage', 'medium', 'Cross-origin messaging -- check origin validation'),
 
-    # Prototype pollution
-    (re.compile(r'__proto__'), '__proto__', 'high', 'Prototype pollution vector via __proto__'),
-    (re.compile(r'constructor\.prototype'), 'constructor.prototype', 'high', 'Prototype pollution via constructor.prototype'),
+    # Prototype pollution: writes only. The bare `__proto__` token is mostly
+    # the defence (`key === "__proto__"`, `{__proto__: null}`).
+    (re.compile(r'\.__proto__\s*=(?!=)|\[\s*["\']__proto__["\']\s*\]\s*=(?!=)'), '__proto__', 'high', 'Prototype pollution vector via __proto__'),
+    (re.compile(r'constructor\.prototype(?:\.[\w$]+|\[[^\]]+\])\s*=(?!=)'), 'constructor.prototype', 'high', 'Prototype pollution via constructor.prototype'),
     (re.compile(r'Object\.assign\s*\([^)]*,\s*(?:req|params|query|body|input|data|user)'), 'Object.assign', 'high', 'Potential prototype pollution via Object.assign with user input'),
 
     # React-specific
     (re.compile(r'dangerouslySetInnerHTML'), 'dangerouslySetInnerHTML', 'high', 'React unsafe HTML injection'),
 ]
+
+# A JS string literal without interpolation.
+_JS_STR = r'''(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\$]|\\.|\$(?!\{))*`)'''
+# A call whose arguments are all string literals runs fixed code: the
+# ubiquitous `Function("return this")()` global-object shim, `eval("1")`.
+_CONST_CALL_ARGS = re.compile(rf'\(\s*(?:{_JS_STR}\s*(?:,\s*{_JS_STR}\s*)*)?\)')
+# setTimeout/setInterval whose code string is one literal, not concatenated.
+_CONST_FIRST_ARG = re.compile(rf'\(\s*{_JS_STR}\s*[,)]')
+# An assignment (or React __html) of one literal, e.g. `el.innerHTML = ""`.
+_CONST_ASSIGNED = re.compile(rf'\s*{_JS_STR}\s*(?:[;,)}}\]]|$)')
+_CONST_HTML_PROP = re.compile(rf'dangerouslySetInnerHTML\s*[:=]\s*\{{?\s*\{{\s*__html\s*:\s*{_JS_STR}\s*\}}')
+
+_CONSTANT_CHECKS = {
+    'eval': 'call', 'Function': 'call', 'document.write': 'call', 'document.writeln': 'call',
+    'location.assign': 'call', 'location.replace': 'call', 'window.open': 'call',
+    'setTimeout': 'first_arg', 'setInterval': 'first_arg',
+    'innerHTML': 'assign', 'outerHTML': 'assign', 'location.href': 'assign',
+    'dangerouslySetInnerHTML': 'html_prop',
+}
+
+# Data an attacker can steer into the page. A sink with one of these within
+# _SOURCE_WINDOW characters keeps its severity; a lexical sink with no source
+# in sight is a lead, not a finding.
+_JS_SOURCE_RE = re.compile(
+    r'location\s*\.\s*(?:hash|search|href|pathname)\b'
+    r'|document\s*\.\s*(?:URL|documentURI|baseURI|referrer|cookie)\b'
+    r'|window\s*\.\s*name\b'
+    r'|URLSearchParams'
+    r'|(?:local|session)Storage\s*\.\s*getItem'
+    r'|\b(?:e|ev|evt|event|msg|message)\s*\.\s*data\b'
+)
+_SOURCE_WINDOW = 400
+_EVIDENCE_RADIUS = 120
+# Matches examined per sink type per line; a minified bundle is one line.
+_MAX_MATCHES_PER_LINE = 200
+
+# Library, runtime and CMS-plugin code the target ships but did not write.
+_VENDOR_URL_RE = re.compile(
+    r'/node_modules/|/bower_components/|/wp-includes/|/wp-content/plugins/'
+    r'|/vendors?/|[/._~-]vendors?[._~-]|chunk-vendors|/polyfills?[/._-]|[/._~-]polyfills?[._-]'
+    r'|/runtime[._~-]|[/._~-]runtime[._~-][\w.~-]*\.js|webpack-runtime'
+    r'|jquery|lodash|moment(?:\.min)?\.js|core-js|bootstrap(?:\.bundle)?(?:\.min)?\.js',
+    re.IGNORECASE,
+)
+
+_SEVERITY_RANK = {'info': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+
+
+def is_vendor_js_url(url: str) -> bool:
+    """True for a JS file whose path marks it as library/runtime/plugin code."""
+    path = (url or '').split('?', 1)[0].split('#', 1)[0]
+    return bool(_VENDOR_URL_RE.search(path))
+
+
+def _is_constant_sink(sink_type: str, line: str, match: 're.Match') -> bool:
+    check = _CONSTANT_CHECKS.get(sink_type)
+    if check == 'call':
+        paren = line.find('(', match.start())
+        return paren != -1 and bool(_CONST_CALL_ARGS.match(line, paren))
+    if check == 'first_arg':
+        paren = line.find('(', match.start())
+        return paren != -1 and bool(_CONST_FIRST_ARG.match(line, paren))
+    if check == 'assign':
+        return bool(_CONST_ASSIGNED.match(line, match.end()))
+    if check == 'html_prop':
+        return bool(_CONST_HTML_PROP.match(line, match.start()))
+    return False
+
+
+def _evidence_window(line: str, start: int, end: int) -> str:
+    lo = max(0, start - _EVIDENCE_RADIUS)
+    hi = min(len(line), end + _EVIDENCE_RADIUS)
+    snippet = line[lo:hi].strip()
+    return f"{'…' if lo > 0 else ''}{snippet}{'…' if hi < len(line) else ''}"
 
 
 def detect_frameworks(
@@ -225,9 +307,35 @@ def detect_frameworks(
     return findings
 
 
+def _pick_sink_match(pattern: 're.Pattern', sink_type: str, line: str, line_offset: int, content: str):
+    """The best non-constant match of `pattern` on `line`: the first one with a
+    source nearby, else the first one. Returns (match, source) or (None, None)."""
+    first = None
+    for i, m in enumerate(pattern.finditer(line)):
+        if i >= _MAX_MATCHES_PER_LINE:
+            break
+        if _is_constant_sink(sink_type, line, m):
+            continue
+        at = line_offset + m.start()
+        near = content[max(0, at - _SOURCE_WINDOW):at + _SOURCE_WINDOW]
+        source = _JS_SOURCE_RE.search(near)
+        if source:
+            return m, source.group(0)
+        if first is None:
+            first = m
+    return first, None
+
+
 def detect_dom_sinks(content: str, source_url: str) -> list:
     """
     Detect DOM-based XSS sinks and prototype pollution patterns.
+
+    A matched sink is a lead, not proof: severity keeps the sink's nominal
+    level only when a user-controlled source appears within _SOURCE_WINDOW
+    characters, drops to low otherwise, and to info in library/runtime code.
+    Calls and assignments whose argument is a constant string are skipped.
+    The evidence is the text around the match, not the start of the line,
+    since a minified bundle is one line.
 
     Returns:
         List of DOM sink finding dicts
@@ -235,31 +343,51 @@ def detect_dom_sinks(content: str, source_url: str) -> list:
     findings = []
     lines = content.split('\n')
     seen = set()
+    vendor = is_vendor_js_url(source_url)
+    offset = 0
 
     for line_num, line in enumerate(lines, 1):
         try:
             for pattern, sink_type, severity, description in DOM_SINK_PATTERNS:
-                if pattern.search(line):
-                    # Deduplicate by sink type + source file
-                    key = f"{sink_type}:{source_url}:{line_num}"
-                    if key in seen:
-                        continue
-                    seen.add(key)
+                # Deduplicate by sink type + source file + line
+                key = f"{sink_type}:{source_url}:{line_num}"
+                if key in seen:
+                    continue
+                match, source = _pick_sink_match(pattern, sink_type, line, offset, content)
+                if match is None:
+                    continue
+                seen.add(key)
 
-                    finding_id = hashlib.sha256(f"sink:{key}".encode()).hexdigest()[:16]
-                    findings.append({
-                        'id': finding_id,
-                        'finding_type': 'dom_sink',
-                        'type': sink_type,
-                        'pattern': line.strip()[:200],
-                        'description': description,
-                        'source_url': source_url,
-                        'line': line_num,
-                        'severity': severity,
-                        'confidence': 'medium',
-                    })
+                if vendor:
+                    final_severity, confidence = 'info', 'low'
+                    note = 'in a library/runtime file'
+                elif source:
+                    final_severity, confidence = severity, 'medium'
+                    note = f'user-controlled source nearby: {source}'
+                else:
+                    final_severity = min(severity, 'low', key=_SEVERITY_RANK.__getitem__)
+                    confidence = 'low'
+                    note = 'no user-controlled source nearby'
+
+                finding_id = hashlib.sha256(f"sink:{key}".encode()).hexdigest()[:16]
+                findings.append({
+                    'id': finding_id,
+                    'finding_type': 'dom_sink',
+                    'type': sink_type,
+                    'pattern': _evidence_window(line, match.start(), match.end()),
+                    'description': f"{description} ({note})",
+                    'source_url': source_url,
+                    'line': line_num,
+                    'column': match.start() + 1,
+                    'severity': final_severity,
+                    'confidence': confidence,
+                    'nominal_severity': severity,
+                    'user_source': source,
+                    'vendor': vendor,
+                })
         except Exception as e:
             print(f"[!][JsRecon] DOM sink detection failed at line {line_num} in {source_url}: {e}")
+        offset += len(line) + 1
 
     return findings
 

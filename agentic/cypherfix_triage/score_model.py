@@ -52,7 +52,7 @@ from typing import Any, Iterable, Optional
 
 #: Bump on ANY change to a table, a threshold or a rule below. Stored with each
 #: run so two runs are only comparable when this matches.
-SCORE_MODEL_VERSION = "v3.3.0"
+SCORE_MODEL_VERSION = "v3.4.0"
 
 
 # ===========================================================================
@@ -448,6 +448,13 @@ JS_RECON_CLASSES = {
     "internal_ip": FindingClass("info_disclosure", 0.2, 0.1, caps_impact=True),
     "email": FindingClass("info_disclosure", 0.2, 0.1, caps_impact=True),
     "source_map_exposure": FindingClass("info_disclosure", 0.2, 0.2, caps_impact=True),
+    "source_map_reference": FindingClass("info_disclosure", 0.1, 0.05, caps_impact=True),
+    "dev_comment": FindingClass("info_disclosure", 0.2, 0.1, caps_impact=True),
+    # A lexical sink is a lead for a DOM XSS, not a confirmed one, and older
+    # scans stamped every Function()/eval() match critical, so the class caps
+    # it. A sink fed by a nearby URL/message source is written high and lands
+    # at the cap; one without a source is written low.
+    "dom_sink": FindingClass("dom_sink", 0.2, 0.5, caps_impact=True),
     "hidden_route": FindingClass("info_disclosure", 0.2, 0.2, caps_impact=True),
     "endpoint": FindingClass("info_disclosure", 0.2, 0.1, caps_impact=True),
     "graphql_endpoint": FindingClass("info_disclosure", 0.2, 0.2, caps_impact=True),

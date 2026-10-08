@@ -294,6 +294,61 @@ def _in_probe_scope(url: str, scope: _ProbeScope) -> bool:
     return host in scope.hosts or any(host.endswith(f'.{r}') for r in scope.roots)
 
 
+class _FirstParty(NamedTuple):
+    """The hosts whose JS is the target's own code; see ``_first_party_scope``."""
+    roots: tuple = ()
+    hosts: frozenset = frozenset()
+
+
+def _first_party_scope(combined_result: dict) -> _FirstParty:
+    """The target's own hosts: the run's roots and target list. Unlike the
+    endpoint probe scope this never counts a host just because a JS file was
+    fetched from it, since the page loads third-party scripts too."""
+    metadata = combined_result.get('metadata') or {}
+    declared = [r for r in (combined_result.get('domains') or []) if isinstance(r, str) and r.strip()]
+    roots = declared or [combined_result.get('domain') or '']
+    roots = [
+        r.strip().strip('.').lower() for r in roots
+        if isinstance(r, str) and r.strip() and not r.startswith('ip-targets.')
+    ]
+    hosts = {
+        _host_of(h) for h in [
+            *(combined_result.get('subdomains') or []),
+            *(metadata.get('subdomain_filter') or []),
+            *(metadata.get('expanded_ips') or []),
+        ]
+    }
+    hosts.discard('')
+    return _FirstParty(roots=tuple(roots), hosts=frozenset(hosts))
+
+
+def _is_third_party_url(url: str, first_party: _FirstParty) -> bool:
+    """True only when the URL's host is known and outside the target. A run
+    with no roots and no hosts cannot tell, so nothing is called third-party."""
+    if not first_party.roots and not first_party.hosts:
+        return False
+    host = _host_of(url)
+    if not host or urlparse(url).scheme not in ('http', 'https'):
+        return False
+    if host in first_party.hosts:
+        return False
+    return not any(host == r or host.endswith(f'.{r}') for r in first_party.roots)
+
+
+def _downgrade_third_party_findings(results: dict, combined_result: dict) -> None:
+    """A DOM sink in a script served from someone else's host (an analytics
+    or marketing loader the page embeds) is that vendor's code, not the
+    target's: keep it visible, at info."""
+    first_party = _first_party_scope(combined_result)
+    for sink in results.get('dom_sinks') or []:
+        if sink.get('vendor') or not _is_third_party_url(sink.get('source_url', ''), first_party):
+            continue
+        sink['vendor'] = True
+        sink['severity'] = 'info'
+        sink['confidence'] = 'low'
+        sink['description'] = re.sub(r' \([^()]*\)$', '', sink.get('description', '')) + ' (in a third-party script)'
+
+
 def _endpoint_probe_method(extracted_method: str) -> str:
     """Choose a non-mutating method for endpoint validation probes."""
     method = extracted_method.upper() if isinstance(extracted_method, str) else 'GET'
@@ -1143,6 +1198,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
 
         # 3. Run all analysis modules
         results = _run_analysis(js_files, settings)
+        _downgrade_third_party_findings(results, combined_result)
 
         # 4. Log false-positive filter stats
         filtered_stats = results.get('_filtered_stats', {})
