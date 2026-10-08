@@ -123,5 +123,25 @@ class TestCircuitBreakerSwitchForwarding(unittest.TestCase):
             self.assertEqual(_partial_recon_env()["RECON_CIRCUIT_BREAKERS"], "on")
 
 
+class TestShodanLabOverrideForwarding(unittest.TestCase):
+    """The guinea-pig labs' Shodan stub reaches both spawns, and a deployment
+    that never set it spawns recon exactly as before: whatever the override
+    names receives the Shodan API key."""
+
+    LAB = {"SHODAN_API_BASE": "http://192.0.2.30", "SHODAN_INTERNETDB_BASE": "http://192.0.2.30/internetdb"}
+
+    def test_set_reaches_both_containers(self):
+        with mock.patch.dict(os.environ, self.LAB):
+            for env in (_full_recon_env(), _partial_recon_env()):
+                self.assertEqual({k: env.get(k) for k in self.LAB}, self.LAB)
+
+    def test_unset_or_blank_adds_nothing(self):
+        env = {k: v for k, v in os.environ.items() if k not in self.LAB}
+        for extra in ({}, {"SHODAN_API_BASE": "", "SHODAN_INTERNETDB_BASE": "  "}):
+            with mock.patch.dict(os.environ, {**env, **extra}, clear=True):
+                for spawned in (_full_recon_env(), _partial_recon_env()):
+                    self.assertFalse(set(self.LAB) & set(spawned), spawned.keys())
+
+
 if __name__ == "__main__":
     unittest.main()

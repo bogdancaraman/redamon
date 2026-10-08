@@ -12,6 +12,7 @@ Features:
   - Domain DNS: Subdomain enumeration + DNS records (paid Shodan plan)
   - Passive CVEs: Extract known CVEs from Shodan host data
 """
+import os
 import re
 import threading
 import time
@@ -50,8 +51,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-SHODAN_API_BASE = "https://api.shodan.io"
-INTERNETDB_BASE = "https://internetdb.shodan.io"
+# The two overrides exist for the guinea-pig labs, which stand a stub API in for
+# Shodan (testing/guinea_pigs/fp_regression_target). Unset in any real deployment;
+# whatever they name receives the Shodan API key.
+SHODAN_API_BASE = os.environ.get("SHODAN_API_BASE") or "https://api.shodan.io"
+INTERNETDB_BASE = os.environ.get("SHODAN_INTERNETDB_BASE") or "https://internetdb.shodan.io"
 
 
 def _normalize_shodan_ssl(ssl_block) -> dict:

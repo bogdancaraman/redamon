@@ -65,6 +65,13 @@ def _env_unset_if_blank(name: str, default: str) -> str:
     return raw.strip() if raw and raw.strip() else default
 
 
+def _shodan_base_overrides() -> dict:
+    """The lab-only Shodan API base overrides, forwarded only when set, so a
+    real deployment's recon environment is unchanged."""
+    return {k: os.environ[k] for k in ("SHODAN_API_BASE", "SHODAN_INTERNETDB_BASE")
+            if (os.environ.get(k) or "").strip()}
+
+
 def sibling_host_path(host_path: str, name: str) -> str:
     """Return the sibling ``name`` of ``host_path`` on the DOCKER HOST filesystem.
 
@@ -996,6 +1003,7 @@ class ContainerManager:
                     # Operator off switch for the recon circuit breakers; only
                     # the exact value "off" disables them (compose defaults "on").
                     "RECON_CIRCUIT_BREAKERS": os.environ.get("RECON_CIRCUIT_BREAKERS", "on"),
+                    **_shodan_base_overrides(),
                     "RECON_RUN_ID": recon_run_id,
                     # Scan Timeline telemetry only (see start_recon docstring).
                     "SCAN_MODE": scan_mode or "",
@@ -2042,6 +2050,7 @@ class ContainerManager:
                     "PARTIAL_RECON_CONFIG": f"/tmp/redamon/partial_{project_id}_{run_id}.json",
                     "PARTIAL_RECON_RUN_ID": run_id,
                     "RECON_CIRCUIT_BREAKERS": os.environ.get("RECON_CIRCUIT_BREAKERS", "on"),
+                    **_shodan_base_overrides(),
                     "UPDATE_GRAPH_DB": "true",
                     "HOST_RECON_OUTPUT_PATH": f"{recon_path}/output",
                     # Required for nuclei custom-template support: build_nuclei_command

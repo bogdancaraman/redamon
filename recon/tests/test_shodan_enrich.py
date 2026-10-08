@@ -941,5 +941,33 @@ class TestShodanCircuitBreaker(unittest.TestCase):
         self.assertNotIn("SUPERSECRETKEY", buf.getvalue() + log_buf.getvalue() + repr(out["shodan"]))
 
 
+class TestApiBaseOverride(unittest.TestCase):
+    """The guinea-pig labs point the module at a stub; unset, it is Shodan."""
+
+    def _load(self, env):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "shodan_enrich_override_probe", os.path.join(_recon_dir, "shodan_enrich.py"))
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, env, clear=False):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_unset_or_blank_is_the_real_api(self):
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ("SHODAN_API_BASE", "SHODAN_INTERNETDB_BASE")}
+        for extra in ({}, {"SHODAN_API_BASE": "", "SHODAN_INTERNETDB_BASE": ""}):
+            with patch.dict(os.environ, {**clean, **extra}, clear=True):
+                m = self._load({})
+            self.assertEqual((m.SHODAN_API_BASE, m.INTERNETDB_BASE),
+                             ("https://api.shodan.io", "https://internetdb.shodan.io"))
+
+    def test_set_points_both_bases_at_the_stub(self):
+        m = self._load({"SHODAN_API_BASE": "http://192.0.2.30",
+                        "SHODAN_INTERNETDB_BASE": "http://192.0.2.30/internetdb"})
+        self.assertEqual((m.SHODAN_API_BASE, m.INTERNETDB_BASE),
+                         ("http://192.0.2.30", "http://192.0.2.30/internetdb"))
+
+
 if __name__ == '__main__':
     unittest.main()
