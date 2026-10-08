@@ -47,6 +47,36 @@ from recon.helpers import (
     resolve_cname_target,
     score_finding,
 )
+from recon.helpers.takeover_helpers import provider_cname_suffixes, same_provider_family
+
+
+def _hosts_answering_2xx(recon_data: dict) -> set[str]:
+    """Hostnames http_probe saw serve a 2xx response on any URL."""
+    from urllib.parse import urlparse
+    out: set[str] = set()
+    for url, info in ((recon_data.get("http_probe") or {}).get("by_url") or {}).items():
+        if not isinstance(info, dict):
+            continue
+        status = info.get("status_code")
+        if not isinstance(status, int) or not 200 <= status < 300:
+            continue
+        try:
+            host = urlparse(url).hostname
+        except ValueError:
+            continue
+        if host:
+            out.add(host.lower().rstrip("."))
+    return out
+
+
+def _is_active_resource(finding: dict) -> bool:
+    return (
+        finding.get("verdict") == "manual_review"
+        and bool(finding.get("host_answers_2xx"))
+        and not finding.get("cname_nxdomain")
+        and not finding.get("cert_provider_default")
+        and not finding.get("cert_absent")
+    )
 
 
 def _cert_names_host(host: str, subject_cn, sans) -> bool:
@@ -234,9 +264,14 @@ def run_subdomain_takeover(
         #       exploitable providers wildcard-resolve at the SaaS edge even
         #       when dangling, so we exempt them from this rule (the scorer
         #       enforces the exemption).
+        #   (c) host_answers_2xx -- http_probe saw the host serve a normal 2xx
+        #       page; an unclaimed resource answers with the provider's error.
         dns_data = recon_data.get("dns", {})
         cname_validation = bool(settings.get("TAKEOVER_CNAME_VALIDATION_ENABLED", True))
+        answered_2xx = _hosts_answering_2xx(recon_data)
         for n in normalized:
+            if n["hostname"] in answered_2xx:
+                n["host_answers_2xx"] = True
             cname = n.get("cname_target") or _lookup_cname_from_dns(dns_data, n["hostname"])
             if not cname:
                 continue
@@ -246,9 +281,14 @@ def run_subdomain_takeover(
             if current_provider in ("", "unknown", "none"):
                 if cname_provider:
                     n["takeover_provider"] = cname_provider
-            elif cname_provider and cname_provider != current_provider:
+            elif cname_provider and not same_provider_family(cname_provider, current_provider):
                 n["provider_mismatch"] = True
                 n["cname_provider"] = cname_provider
+            elif not cname_provider and provider_cname_suffixes(current_provider):
+                # The claimed provider's resources live under known suffixes and
+                # the CNAME carries none of them (e.g. a body fingerprint naming
+                # one SaaS on a host that points at another's mail domain).
+                n["provider_mismatch"] = True
             if cname_validation:
                 try:
                     probe = resolve_cname_target(cname)
@@ -384,6 +424,16 @@ def run_subdomain_takeover(
         # --------------------------------------------------------------
         # 6. Package results
         # --------------------------------------------------------------
+        # A demoted candidate whose host served a normal page, with nothing
+        # pointing at an unclaimed edge, is an active resource: kept in the
+        # scan output for audit, not written as a finding. A dangling record
+        # (NXDOMAIN, a provider default cert, no TLS at all) always stays.
+        active = [f for f in scored if _is_active_resource(f)]
+        if active:
+            print(f"[*][Takeover] {len(active)} candidate(s) are active resources "
+                  f"(host served a 2xx page) -- not reported")
+        scored = [f for f in scored if not _is_active_resource(f)]
+
         by_target: dict[str, list[dict]] = {}
         by_provider: dict[str, int] = {}
         counts = {"confirmed": 0, "likely": 0, "manual_review": 0}
@@ -399,11 +449,17 @@ def run_subdomain_takeover(
         result = {
             "findings": scored,
             "by_target": by_target,
+            "active_resources": [
+                {k: f.get(k) for k in ("hostname", "cname_target", "takeover_provider",
+                                       "sources", "confidence", "cname_provider")}
+                for f in active
+            ],
             "summary": {
                 "total": len(scored),
                 "confirmed": counts["confirmed"],
                 "likely": counts["likely"],
                 "manual_review": counts["manual_review"],
+                "active_resources": len(active),
                 "by_provider": by_provider,
             },
             "scan_metadata": {

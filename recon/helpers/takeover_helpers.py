@@ -56,6 +56,8 @@ PROVIDER_FROM_SIGNAL: dict[str, str] = {
     "tilda": "tilda",
     "statuspage": "statuspage",
     "campaignmonitor": "campaignmonitor",
+    "uptimerobot": "uptimerobot",
+    "mailgun": "mailgun",
     # Subjack internal service strings (emitted in Result.service for non-CNAME checks)
     "ns delegation takeover": "ns-delegation",
     "ns takeover": "ns-delegation",
@@ -110,7 +112,33 @@ PROVIDER_FROM_SIGNAL: dict[str, str] = {
     ".helpscoutdocs.com": "helpscout",
     ".intercom.help": "intercom",
     ".bitbucket.io": "bitbucket",
+    ".stats.uptimerobot.com": "uptimerobot",
+    ".mailgun.org": "mailgun",
+    ".akamaiedge.net": "akamai",
+    ".edgekey.net": "akamai",
+    ".edgesuite.net": "akamai",
+    ".akamaized.net": "akamai",
+    ".akamaihd.net": "akamai",
+    ".akamai.net": "akamai",
+    ".azurefd.net": "azure-front-door",
+    ".azureedge.net": "azure-cdn",
 }
+
+
+def same_provider_family(a: Optional[str], b: Optional[str]) -> bool:
+    """`azure` (a generic nuclei template) and `azure-app-service` (the CNAME)
+    are one provider; `aws-s3` and `aws-cloudfront` are not."""
+    a, b = (a or "").lower(), (b or "").lower()
+    return bool(a) and bool(b) and (a == b or a.startswith(b + "-") or b.startswith(a + "-"))
+
+
+def provider_cname_suffixes(provider: Optional[str]) -> tuple[str, ...]:
+    """The CNAME suffixes a provider's resources live under (its whole family),
+    or () when none are known."""
+    return tuple(
+        signal for signal, slug in PROVIDER_FROM_SIGNAL.items()
+        if signal.startswith(".") and same_provider_family(slug, provider)
+    )
 
 # Providers where a claim is a single-step registration (name-based namespace,
 # no verification challenge). A confirmed match on these is auto-exploitable
@@ -720,6 +748,9 @@ def score_finding(
              cert rather than the customer's — positive evidence of a claim)
         +10  cert_absent (the 443 TLS handshake fails entirely — consistent with
              a dangling target)
+        -30  host_answers_2xx and the CNAME target is not NXDOMAIN: the host
+             served a normal 2xx page, while an unclaimed resource answers with
+             the provider's error page. Applies to every provider
 
     verdict:
         confirmed      if score >= threshold + 10
@@ -773,6 +804,8 @@ def score_finding(
         score += 20
     if finding.get("cert_absent"):
         score += 10
+    if finding.get("host_answers_2xx") and not finding.get("cname_nxdomain"):
+        score -= 30
 
     score = max(0, min(100, score))
 
