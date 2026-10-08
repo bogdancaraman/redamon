@@ -23,8 +23,9 @@ import requests
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
-from typing import Optional
+from typing import NamedTuple, Optional
 
+from recon.helpers.roe_scope import _is_roe_excluded
 from recon.helpers.js_recon.patterns import (
     scan_js_content, scan_dev_comments, load_custom_patterns,
 )
@@ -228,15 +229,31 @@ def _host_of(value) -> str:
         return host
 
 
-def _endpoint_probe_scope(combined_result: dict, js_files: list) -> tuple:
-    """``(roots, hosts)`` an extracted endpoint may be probed on.
+class _ProbeScope(NamedTuple):
+    """Where an extracted endpoint may be probed; built by ``_endpoint_probe_scope``."""
+    roots: tuple = ()
+    hosts: frozenset = frozenset()
+    roe_excluded: tuple = ()
+
+
+def _endpoint_probe_scope(combined_result: dict, js_files: list, settings: dict) -> _ProbeScope:
+    """The hosts this run may send an endpoint probe to.
 
     A bundle names third-party hosts (analytics, social widgets, placeholder
     images) as freely as its own API, and the scan has no permission to send
-    them traffic. In scope: a target host, the host a pipeline JS file was
-    fetched from (those were collected in scope), or a host under a scanned
-    root. A filtered run (IP mode, an explicit host list) keeps exactly the
-    hosts the user gave, so its roots do not widen it.
+    them traffic. Three rules, the last one winning:
+
+    - ``hosts``: the run's own target list (``subdomains``, which every run
+      type has already narrowed: a filtered or literal batch group to its
+      listed hosts, the apex only when included, a partial run to the hosts
+      its group rules admit), the IP-mode targets, and the hosts the pipeline
+      JS files were fetched from.
+    - ``roots``: any strict subdomain of a scanned root, so a host first seen
+      in the JS is still probed, but only in a run that declares itself full
+      discovery (``filtered_mode`` False). A filtered run, IP mode, a literal
+      batch group and a partial run (which carries no such flag) never widen
+      past their exact hosts.
+    - ``roe_excluded``: a Rules-of-Engagement exclusion is never probed.
     """
     metadata = combined_result.get('metadata') or {}
     fetched_from = [
@@ -254,19 +271,27 @@ def _endpoint_probe_scope(combined_result: dict, js_files: list) -> tuple:
     hosts.discard('')
 
     roots = []
-    if not metadata.get('filtered_mode'):
+    if metadata.get('filtered_mode') is False:
         declared = [r for r in (combined_result.get('domains') or []) if isinstance(r, str) and r.strip()]
         roots = declared or [combined_result.get('domain') or '']
         roots = [r.strip().strip('.').lower() for r in roots if isinstance(r, str) and r.strip()]
-    return roots, hosts
+
+    settings = settings or {}
+    excluded = settings.get('ROE_EXCLUDED_HOSTS') if settings.get('ROE_ENABLED') else None
+    return _ProbeScope(
+        roots=tuple(roots),
+        hosts=frozenset(hosts),
+        roe_excluded=tuple(e for e in (excluded or []) if isinstance(e, str) and e.strip()),
+    )
 
 
-def _in_probe_scope(url: str, scope: tuple) -> bool:
-    roots, hosts = scope
+def _in_probe_scope(url: str, scope: _ProbeScope) -> bool:
     host = _host_of(url)
     if not host:
         return False
-    return host in hosts or any(host == r or host.endswith(f'.{r}') for r in roots)
+    if scope.roe_excluded and _is_roe_excluded(host, list(scope.roe_excluded)):
+        return False
+    return host in scope.hosts or any(host.endswith(f'.{r}') for r in scope.roots)
 
 
 def _endpoint_probe_method(extracted_method: str) -> str:
@@ -781,11 +806,11 @@ def _validate_secrets(secrets: list, settings: dict) -> list:
     return secrets
 
 
-def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: tuple, request_func=None) -> list:
+def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: _ProbeScope, request_func=None) -> list:
     """Validate extracted endpoints with lightweight non-following HTTP probes.
 
-    ``scope`` is ``_endpoint_probe_scope``'s ``(roots, hosts)``. Required, so a
-    caller cannot forget it and probe every host a bundle mentions.
+    ``scope`` comes from ``_endpoint_probe_scope``. Required, so a caller
+    cannot forget it and probe every host a bundle mentions.
     """
     if not settings.get('JS_RECON_VALIDATE_ENDPOINTS', False):
         for endpoint in endpoints:
@@ -1135,7 +1160,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         if results.get('endpoints'):
             print(f"[*][JsRecon] Validating {len(results['endpoints'])} discovered endpoints...")
             results['endpoints'] = _validate_extracted_endpoints(
-                results['endpoints'], settings, _endpoint_probe_scope(combined_result, js_files),
+                results['endpoints'], settings, _endpoint_probe_scope(combined_result, js_files, settings),
             )
             hittable_count = sum(
                 1 for endpoint in results['endpoints']

@@ -49,11 +49,11 @@ class GuardPolicy(unittest.TestCase):
 
 
 try:
-    from recon.main_recon_modules.js_recon import _validate_extracted_endpoints
+    from recon.main_recon_modules.js_recon import _ProbeScope, _validate_extracted_endpoints
     _HAVE = True
 except Exception:
     try:
-        from js_recon import _validate_extracted_endpoints  # type: ignore
+        from js_recon import _ProbeScope, _validate_extracted_endpoints  # type: ignore
         _HAVE = True
     except Exception:
         _HAVE = False
@@ -80,7 +80,7 @@ class ProbeSkipsSSRF(unittest.TestCase):
             {"full_url": PUBLIC, "method": "GET"},
         ]
         # Both hosts in scope, so only the SSRF guard decides.
-        scope = ([], {"169.254.169.254", "93.184.216.34"})
+        scope = _ProbeScope(hosts=frozenset({"169.254.169.254", "93.184.216.34"}))
         _validate_extracted_endpoints(
             endpoints, {"JS_RECON_VALIDATE_ENDPOINTS": True}, scope, request_func=spy
         )

@@ -931,7 +931,7 @@ class TestEndpoints(unittest.TestCase):
         self.assertEqual(endpoints_mod.extract_endpoints([], {'JS_RECON_EXTRACT_ENDPOINTS': False}), [])
 
 
-_EXAMPLE_SCOPE = (['example.com'], set())
+_EXAMPLE_SCOPE = js_recon._ProbeScope(roots=('example.com',))
 
 
 class TestEndpointValidationHelpers(unittest.TestCase):
@@ -1054,7 +1054,7 @@ class TestEndpointValidationHelpers(unittest.TestCase):
                 ],
             },
             # In scope, so it is probed, yet a different origin from the JS file.
-            (['example.com'], {'analytics.vendor.example'}),
+            js_recon._ProbeScope(roots=('example.com',), hosts=frozenset({'analytics.vendor.example'})),
             request_func=lambda method, url, **kwargs: calls.append((method, url, kwargs)) or Response(),
         )
 
@@ -1165,7 +1165,7 @@ class TestEndpointValidationHelpers(unittest.TestCase):
             validated = js_recon._validate_extracted_endpoints(
                 endpoints,
                 {'JS_RECON_VALIDATE_ENDPOINTS': True, 'JS_RECON_ENDPOINT_CONCURRENCY': 1},
-                (['example.com'], {'app.example.com'}),
+                js_recon._ProbeScope(roots=('example.com',), hosts=frozenset({'app.example.com'})),
                 request_func=lambda method, url, **kwargs: probed.append(url) or Response(),
             )
 
@@ -1188,7 +1188,7 @@ class TestEndpointValidationHelpers(unittest.TestCase):
         validated = js_recon._validate_extracted_endpoints(
             endpoints,
             {'JS_RECON_VALIDATE_ENDPOINTS': True},
-            ([], set()),
+            js_recon._ProbeScope(),
             request_func=lambda *args, **kwargs: probed.append(args),
         )
 
@@ -1197,56 +1197,124 @@ class TestEndpointValidationHelpers(unittest.TestCase):
 
 
 class TestEndpointProbeScope(unittest.TestCase):
+    """Each run type, with the combined_result shape that run hands to js_recon."""
 
-    def test_full_discovery_scopes_on_the_roots_and_the_fetched_hosts(self):
-        roots, hosts = js_recon._endpoint_probe_scope(
-            {'domain': 'Example.com.', 'metadata': {'filtered_mode': False}},
+    def _in(self, scope, *urls):
+        for url in urls:
+            self.assertTrue(js_recon._in_probe_scope(url, scope), url)
+
+    def _out(self, scope, *urls):
+        for url in urls:
+            self.assertFalse(js_recon._in_probe_scope(url, scope), url)
+
+    def test_single_domain_full_discovery(self):
+        scope = js_recon._endpoint_probe_scope(
+            {'domain': 'Example.com.', 'subdomains': ['www.example.com'],
+             'metadata': {'filtered_mode': False}},
             [{'url': 'https://cdn.example.net/app.js'}, {'url': 'upload://bundle.js'}],
+            {},
         )
 
-        self.assertEqual(roots, ['example.com'])
-        # The upload:// pseudo-URL names no host the scan may touch.
-        self.assertEqual(hosts, {'cdn.example.net'})
+        self.assertEqual(scope.roots, ('example.com',))
+        # A subdomain first seen in the JS, and the host a JS file came from.
+        self._in(scope, 'https://www.example.com/a', 'https://api.example.com/v1',
+                 'https://cdn.example.net/x')
+        # The apex is a target only when the run lists it (Include Root Domain);
+        # the upload:// pseudo-URL names no host the scan may touch.
+        self._out(scope, 'https://example.com/a', 'https://evilexample.com/a',
+                  'https://bundle.js/a', 'https://ns.adobe.com/personalization/dom-action')
 
-    def test_partial_run_scopes_on_every_declared_root(self):
-        roots, hosts = js_recon._endpoint_probe_scope(
-            {'domain': 'a.test', 'domains': ['a.test', 'b.test'], 'subdomains': ['www.a.test']},
-            [],
-        )
-
-        self.assertEqual(roots, ['a.test', 'b.test'])
-        self.assertEqual(hosts, {'www.a.test'})
-
-    def test_filtered_run_keeps_only_the_listed_hosts(self):
+    def test_single_domain_full_discovery_with_the_apex_listed(self):
         scope = js_recon._endpoint_probe_scope(
-            {
-                'domain': 'example.com',
-                'metadata': {'filtered_mode': True, 'subdomain_filter': ['www.example.com:8443']},
-            },
-            [],
+            {'domain': 'example.com', 'subdomains': ['example.com', 'www.example.com'],
+             'metadata': {'filtered_mode': False}},
+            [], {},
         )
 
-        self.assertEqual(scope, ([], {'www.example.com'}))
-        self.assertTrue(js_recon._in_probe_scope('https://www.example.com/a', scope))
-        self.assertFalse(js_recon._in_probe_scope('https://api.example.com/a', scope))
+        self._in(scope, 'https://example.com/a')
 
-    def test_ip_mode_scopes_on_the_target_ips(self):
+    def test_single_domain_filtered_keeps_only_the_listed_hosts(self):
         scope = js_recon._endpoint_probe_scope(
-            {
-                'domain': 'ip-targets.proj1',
-                'metadata': {
-                    'filtered_mode': True,
-                    'expanded_ips': ['192.0.2.10', '2001:db8::1'],
-                    'subdomain_filter': ['192.0.2.10', 'host.example.org'],
-                },
-            },
-            [],
+            {'domain': 'example.com', 'subdomains': ['www.example.com'],
+             'metadata': {'filtered_mode': True, 'subdomain_filter': ['www.example.com:8443']}},
+            [], {},
         )
 
-        self.assertTrue(js_recon._in_probe_scope('http://192.0.2.10:8080/api', scope))
-        self.assertTrue(js_recon._in_probe_scope('http://[2001:DB8:0::1]/api', scope))
-        self.assertTrue(js_recon._in_probe_scope('https://host.example.org/', scope))
-        self.assertFalse(js_recon._in_probe_scope('http://192.0.2.11/api', scope))
+        self.assertEqual(scope.roots, ())
+        self._in(scope, 'https://www.example.com/a')
+        self._out(scope, 'https://api.example.com/a', 'https://example.com/a')
+
+    def test_ip_mode_keeps_only_the_target_ips_and_their_names(self):
+        scope = js_recon._endpoint_probe_scope(
+            {'domain': 'ip-targets.proj1', 'subdomains': ['192-0-2-10'],
+             'metadata': {
+                 'ip_mode': True,
+                 'filtered_mode': True,
+                 'expanded_ips': ['192.0.2.10', '2001:db8::1'],
+                 'subdomain_filter': ['192.0.2.10', 'host.example.org'],
+             }},
+            [], {},
+        )
+
+        self._in(scope, 'http://192.0.2.10:8080/api', 'http://[2001:DB8:0::1]/api',
+                 'https://host.example.org/')
+        self._out(scope, 'http://192.0.2.11/api', 'https://x.ip-targets.proj1/')
+
+    def test_batch_literal_group_keeps_only_its_uploaded_hosts(self):
+        # run_domain_group hands js_recon ONE group: its own root, never the batch's.
+        scope = js_recon._endpoint_probe_scope(
+            {'domain': 'b.test', 'subdomains': ['shop.b.test'],
+             'all_project_roots': ['a.test', 'b.test'],
+             'metadata': {'filtered_mode': True, 'subdomain_filter': ['shop.b.test']}},
+            [], {},
+        )
+
+        self._in(scope, 'https://shop.b.test/cart')
+        self._out(scope, 'https://api.b.test/v1', 'https://www.a.test/')
+
+    def test_batch_wildcard_group_widens_to_its_own_root_only(self):
+        scope = js_recon._endpoint_probe_scope(
+            {'domain': 'a.test', 'subdomains': ['www.a.test'],
+             'all_project_roots': ['a.test', 'b.test'],
+             'metadata': {'filtered_mode': False}},
+            [], {},
+        )
+
+        self._in(scope, 'https://api.a.test/v1')
+        self._out(scope, 'https://shop.b.test/cart')
+
+    def test_partial_run_over_a_batch_keeps_its_admitted_hosts(self):
+        # js_analysis.py: "subdomains" is _scope_partial_urls' host list, which
+        # already applies each group's rules (a literal group's listed hosts).
+        scope = js_recon._endpoint_probe_scope(
+            {'domain': 'a.test', 'domains': ['a.test', 'b.test'],
+             'subdomains': ['www.a.test', 'shop.b.test'],
+             'metadata': {'project_id': 'p1'}},
+            [{'url': 'https://www.a.test/static/app.js'}], {},
+        )
+
+        self.assertEqual(scope.roots, ())
+        self._in(scope, 'https://www.a.test/api', 'https://shop.b.test/cart')
+        self._out(scope, 'https://api.b.test/v1', 'https://api.a.test/v1')
+
+    def test_roe_exclusions_win_over_every_other_rule(self):
+        combined = {'domain': 'example.com',
+                    'subdomains': ['payments.example.com', '192.0.2.10'],
+                    'metadata': {'filtered_mode': False}}
+        excluded = ['payments.example.com', '192.0.2.0/24']
+
+        scope = js_recon._endpoint_probe_scope(
+            combined, [{'url': 'https://payments.example.com/app.js'}],
+            {'ROE_ENABLED': True, 'ROE_EXCLUDED_HOSTS': excluded},
+        )
+        self._out(scope, 'https://payments.example.com/api', 'https://eu.payments.example.com/api',
+                  'http://192.0.2.10/api')
+        self._in(scope, 'https://api.example.com/v1')
+
+        roe_off = js_recon._endpoint_probe_scope(
+            combined, [], {'ROE_ENABLED': False, 'ROE_EXCLUDED_HOSTS': excluded},
+        )
+        self._in(roe_off, 'https://payments.example.com/api')
 
 
 # ============================================================
