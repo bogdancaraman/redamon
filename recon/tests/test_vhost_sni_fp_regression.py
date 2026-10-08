@@ -323,6 +323,19 @@ class TestControlsAndMatching:
         sev = _classify_severity("blog.example.com", "both", {"status": 421, "size": 291}, l4, l7, l4)
         assert sev == "high"
 
+    def test_dynamic_page_on_both_layers_is_the_same_page(self):
+        # A live app's response time changes the bytes, not the page.
+        l7 = {"status": 200, "size": 5400, "canon_hash": "a", "title": "Wiki"}
+        l4 = {"status": 200, "size": 5402, "canon_hash": "b", "title": "Wiki"}
+        sev = _classify_severity("blog.example.com", "both", {"status": 421, "size": 291}, l4, l7, l4, size_tolerance=50)
+        assert sev == "low"
+
+    def test_two_apps_of_similar_size_are_still_different_pages(self):
+        l7 = {"status": 200, "size": 5400, "canon_hash": "a", "title": "Public site"}
+        l4 = {"status": 200, "size": 5410, "canon_hash": "b", "title": "Admin console"}
+        sev = _classify_severity("blog.example.com", "both", {"status": 421, "size": 291}, l4, l7, l4, size_tolerance=50)
+        assert sev == "high"
+
     def test_noisy_frontend_buckets_on_fingerprint_not_size(self):
         anomalies = [
             {"observed_status": 500, "observed_size": 246 + 2 * n, "observed_fingerprint": "tpl"}
@@ -420,6 +433,20 @@ class TestStabilityReprobe:
         assert out["findings"] == []
         assert out["by_ip"][IP]["suppressed_unstable"] == 1
         assert sum(1 for h, l in fake.calls if h == f"status.{APEX}") == 4  # L7+L4, twice
+
+    def test_a_live_app_whose_page_changes_every_request_survives(self):
+        # Response time and a short counter change on each request; no
+        # normalisation rule strips them, and the app is still real.
+        def responder(host, layer, attempt):
+            if layer == "baseline":
+                return _proc(421, b"<h1>Misdirected Request</h1>")
+            if host == f"wiki.{APEX}":
+                return _proc(200, f"<html><title>Internal Wiki</title>served in 0.{attempt}2s hits={attempt * 7}</html>".encode())
+            return _proc(500, fastly_unknown_domain(host))
+
+        out, _ = _run(responder, words=WORDS + ["wiki"])
+        assert [f["hostname"] for f in out["findings"]] == [f"wiki.{APEX}"]
+        assert out["by_ip"][IP]["suppressed_unstable"] == 0
 
     def test_a_stable_hidden_app_survives_the_reprobe(self):
         def responder(host, layer, attempt):

@@ -3,8 +3,8 @@
 A field report muted takeover findings on hosts that were live first-party,
 Akamai and Azure services, and one where a generic body fingerprint named an
 uptime-monitor SaaS on a host whose CNAME pointed at a mail provider. The
-provider check now also fires when the CNAME carries none of the claimed
-provider's suffixes, and a host that served a normal 2xx page is demoted.
+provider check knows those providers' CNAME suffixes, and a host that served
+a normal 2xx page is demoted, or dropped as an active resource.
 A dangling CNAME (NXDOMAIN) keeps its score.
 """
 
@@ -61,12 +61,6 @@ class TestProviderHelpers:
         assert not th.same_provider_family("uptimerobot", "mailgun")
         assert not th.same_provider_family("", "heroku")
 
-    def test_known_suffixes(self):
-        assert ".stats.uptimerobot.com" in th.provider_cname_suffixes("uptimerobot")
-        assert ".azurewebsites.net" in th.provider_cname_suffixes("azure")
-        assert ".edgekey.net" in th.provider_cname_suffixes("akamai")
-        assert th.provider_cname_suffixes("pingdom") == ()
-
     def test_new_cname_providers(self):
         assert th.provider_from_cname("mailgun.org") == "mailgun"
         assert th.provider_from_cname("stats.uptimerobot.com") == "uptimerobot"
@@ -91,13 +85,12 @@ class TestFieldReportCases:
         assert f["verdict"] == "manual_review"
         assert f["severity"] == "info"
 
-    def test_claimed_provider_whose_suffix_the_cname_lacks(self, monkeypatch):
-        # The CNAME maps to no known provider, but the claimed one lives under
-        # known suffixes the CNAME does not carry.
-        [f] = _run(monkeypatch, "status.example.com", "monitor.example-ops.test",
-                   subjack_service="uptimerobot")["findings"]
-        assert f["provider_mismatch"] is True
-        assert f["verdict"] == "manual_review"
+    def test_a_cname_the_table_does_not_know_is_not_a_mismatch(self, monkeypatch):
+        # The suffix table is incomplete (a regional S3 endpoint here), so an
+        # unknown CNAME must not demote a real dangling bucket.
+        [f] = _run(monkeypatch, "assets.example.com", "example-assets.s3.eu-west-1.amazonaws.com",
+                   nuclei_template="aws-bucket-takeover", status=404, resolves=False, nxdomain=True)["findings"]
+        assert not f.get("provider_mismatch")
 
     def test_live_akamai_service_is_an_active_resource_not_a_finding(self, monkeypatch):
         out = _run(monkeypatch, "www.example.com", "www.example.com.edgekey.net",

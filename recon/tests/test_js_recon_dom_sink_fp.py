@@ -58,6 +58,10 @@ class TestConstantCodeIsNotASink(unittest.TestCase):
     def test_react_html_literal(self):
         self.assertEqual(types('h("div",{dangerouslySetInnerHTML:{__html:"<br/>"}})'), [])
 
+    def test_literal_at_line_end_followed_by_a_statement_is_constant(self):
+        self.assertEqual(types('el.innerHTML = ""\nvar x = 1\n'), [])
+        self.assertEqual(types("el.innerHTML = '<p>'\n// render later\n"), [])
+
     def test_window_open_and_location_to_fixed_urls(self):
         self.assertEqual(types('window.open("/help", "_blank"); location.assign("/login");'), [])
         self.assertEqual(types('location.href = "/logout";'), [])
@@ -92,7 +96,14 @@ class TestRealSinksStayDetected(unittest.TestCase):
         js = 'window.addEventListener("message", function (e) { new Function(e.data)(); });'
         [s] = sinks(js)
         self.assertEqual((s["type"], s["severity"]), ("Function", "critical"))
-        self.assertEqual(s["user_source"], "e.data")
+        self.assertEqual(s["user_source"], 'addEventListener("message"')
+
+    def test_minified_message_handler_with_any_event_name(self):
+        for js in ('addEventListener("message",function(t){eval(t.data)})',
+                   "window.onmessage=function(n){o.innerHTML=n.data}"):
+            [s] = sinks(js)
+            self.assertIn(s["severity"], ("critical", "high"), js)
+            self.assertEqual(s["confidence"], "medium")
 
     def test_query_to_eval(self):
         js = 'var p = new URLSearchParams(location.search); eval(p.get("cb"));'
@@ -110,6 +121,11 @@ class TestRealSinksStayDetected(unittest.TestCase):
 
     def test_template_literal_with_interpolation_is_dynamic(self):
         self.assertEqual(types('el.innerHTML = `<b>${name}</b>`;'), ["innerHTML"])
+
+    def test_literal_continued_on_the_next_line_is_dynamic(self):
+        js = "el.innerHTML = '<div>'\n  + decodeURIComponent(location.hash)\n"
+        [s] = sinks(js)
+        self.assertEqual((s["type"], s["severity"]), ("innerHTML", "high"))
 
     def test_concatenated_settimeout_string(self):
         self.assertEqual(types('setTimeout("go(" + id + ")", 10);'), ["setTimeout"])
@@ -139,6 +155,12 @@ class TestMinifiedBundles(unittest.TestCase):
         [s] = sinks(js)
         self.assertEqual(s["severity"], "critical")
         self.assertIn("Function(q)", s["pattern"])
+
+    def test_constant_matches_do_not_use_up_the_scan_budget(self):
+        shim = 'var g=Function("return this")();' * 300
+        js = shim + 'var q=location.search;Function(q)();'
+        [s] = sinks(js)
+        self.assertEqual(s["severity"], "critical")
 
     def test_one_finding_per_sink_type_per_line(self):
         js = "a.innerHTML=x;" * 50
@@ -178,10 +200,17 @@ class TestVendorCode(unittest.TestCase):
         ):
             self.assertFalse(is_vendor_js_url(url), url)
 
-    def test_vendor_sink_is_info_even_with_a_source(self):
+    def test_vendor_sink_without_a_source_is_info(self):
         url = "https://www.example.com/wp-content/plugins/forms/js/forms.js"
-        [s] = sinks("el.innerHTML = location.hash;", url)
+        [s] = sinks("el.innerHTML = msg;", url)
         self.assertEqual((s["severity"], s["confidence"], s["vendor"]), ("info", "low", True))
+
+    def test_vendor_sink_fed_by_a_source_keeps_its_severity(self):
+        # A hash-reading plugin the target ships is still the target's DOM XSS.
+        for url in ("https://www.example.com/wp-content/plugins/gallery/js/jquery.prettyPhoto.js",
+                    "https://app.example.com/assets/runtime-config.js"):
+            [s] = sinks("el.innerHTML = location.hash;", url)
+            self.assertEqual((s["severity"], s["confidence"], s["vendor"]), ("high", "low", True), url)
 
 
 class TestFindingIdsAreStable(unittest.TestCase):
@@ -225,6 +254,19 @@ class TestThirdPartyScriptDowngrade(unittest.TestCase):
         r = self._results("https://cdn.vendor.test/x.js")
         js_recon._downgrade_third_party_findings(r, {})
         self.assertEqual(r["dom_sinks"][0]["severity"], "high")
+
+    def test_a_source_fed_sink_on_a_vendor_host_keeps_its_severity(self):
+        r = self._results("https://js.marketing-vendor.test/loader.js")
+        r["dom_sinks"][0]["user_source"] = "location.hash"
+        js_recon._downgrade_third_party_findings(r, {"domain": "example.com"})
+        s = r["dom_sinks"][0]
+        self.assertEqual((s["severity"], s["confidence"], s["third_party"]), ("high", "low", True))
+
+    def test_the_targets_own_cdn_asset_host_is_not_third_party(self):
+        r = self._results("https://d111abcdef8.cloudfront.net/static/js/main.js",
+                          "https://example-assets.s3.amazonaws.com/app.js")
+        js_recon._downgrade_third_party_findings(r, {"domain": "example.com"})
+        self.assertEqual([s["severity"] for s in r["dom_sinks"]], ["high", "high"])
 
     def test_uploaded_files_are_never_third_party(self):
         r = self._results("upload://bundle.js")

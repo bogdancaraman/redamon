@@ -58,6 +58,7 @@ def _finding_type_props(data_key: str, finding: dict) -> dict:
             "column": finding.get("column"),
             "user_source": finding.get("user_source"),
             "vendor": bool(finding.get("vendor")),
+            "third_party": bool(finding.get("third_party")),
             "nominal_severity": finding.get("nominal_severity"),
         }
     return {}

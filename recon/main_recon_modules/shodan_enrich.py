@@ -478,10 +478,12 @@ def _service_vulns(raw) -> list[dict]:
 # Providers whose IPs front many unrelated tenants. A CVE Shodan correlates to
 # such an IP describes whatever answered there for whichever customer, not the
 # target; our own CDN ranges know only Cloudflare, so Shodan's attribution is
-# used as well.
+# used as well. Only providers that sell no servers are named: Akamai (which
+# now runs Linode), G-Core and StackPath also rent VMs, so their edges are
+# recognised by Shodan's `cdn` tag instead of the org name.
 _SHARED_EDGE_ORG = re.compile(
-    r"cloudflare|fastly|akamai|vercel|netlify|incapsula|imperva|sucuri|stackpath"
-    r"|edgecast|edgio|limelight|bunny|cdn77|g-core|gcore|cloudfront",
+    r"cloudflare|fastly|vercel|netlify|incapsula|imperva|sucuri"
+    r"|edgecast|edgio|limelight|bunny|cdn77|cloudfront",
     re.IGNORECASE,
 )
 

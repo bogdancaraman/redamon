@@ -877,7 +877,7 @@ Source-map properties (finding_type source_map_exposure or source_map_reference)
 - has_sources_content (boolean): the map embeds the target's own source text
 - source_files (list[string]): the first-party source paths, capped at 100
 - secrets_in_source (integer): secret-pattern hits in the embedded first-party source text
-- third_party (boolean): the script is served from a host outside the target
+- third_party (boolean): the script is served from a vendor's host outside the target (a generic CDN or storage host is not counted, since targets serve their own bundles from those); also set on a dom_sink
 DOM-sink and developer-reference properties (finding_type dom_sink or dev_reference; a dev_reference is a localhost or internal/staging URL or a debug flag in shipped JS, a recon lead rather than a credential):
 - line (integer): line of the JS file where the sink or reference matched
 - column (integer): column of a dom_sink match on that line

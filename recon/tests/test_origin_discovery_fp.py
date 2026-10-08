@@ -52,7 +52,7 @@ class TestFrontedHosts(unittest.TestCase):
 
     def test_named_edge_cdns_are_fronted(self):
         ctx = od._RunCtx(_settings())
-        for cdn in ("cloudflare", "akamai", "fastly", "cloudfront", "incapsula"):
+        for cdn in ("cloudflare", "akamai", "fastly", "cloudfront", "incapsula", "bunnycdn", "keycdn"):
             with self.subTest(cdn=cdn), patch.object(od, "_resolve_ips", return_value=set()):
                 self.assertIn("www.example.com", od._select_fronted_hosts(_probe(cdn=cdn), ctx))
 
@@ -125,6 +125,13 @@ class TestDenyWalls(unittest.TestCase):
         match = self._score(DENY, APP, cert=1.0)
         self.assertIsNotNone(match)
         self.assertEqual(match["status_code"], 200)
+
+    def test_api_origin_answering_401_or_404_confirms_on_an_exact_certificate(self):
+        for status in (401, 404):
+            api = {"text": '{"error":"not found"}', "status": status, "headers": {}, "cookies": ""}
+            ref = {"text": '{"error":"not found"}', "status": status, "headers": {}, "cookies": ""}
+            self.assertIsNotNone(self._score(ref, api, cert=0.5), status)
+            self.assertIsNone(self._score(ref, api, cert=0.0), status)
 
     def test_edge_denies_and_the_origin_has_no_matching_certificate(self):
         self.assertIsNone(self._score(DENY, APP, cert=0.0))

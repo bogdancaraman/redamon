@@ -113,15 +113,20 @@ class TestSharedEdge(unittest.TestCase):
         self.assertTrue(_is_shared_edge_host({"tags": ["CDN", "cloud"]}))
 
     def test_edge_provider_attribution(self):
-        for org in ("Vercel, Inc", "Cloudflare, Inc.", "Fastly, Inc.", "Akamai Technologies, Inc.",
-                    "Netlify", "Amazon CloudFront"):
+        for org in ("Vercel, Inc", "Cloudflare, Inc.", "Fastly, Inc.", "Netlify", "Amazon CloudFront"):
             self.assertTrue(_is_shared_edge_host({"org": org}), org)
 
     def test_cloud_hosting_is_not_a_shared_edge(self):
-        # A bare EC2/Azure/GCP origin serves the target itself.
+        # A bare EC2/Azure/GCP origin, or a Linode VM now attributed to Akamai,
+        # serves the target itself.
         for host in ({"org": "Amazon.com, Inc.", "tags": ["cloud"]}, {"isp": "Microsoft Corporation"},
-                     {"org": "Google LLC"}, {"org": "Example Hosting Ltd"}, {}):
+                     {"org": "Google LLC"}, {"org": "Example Hosting Ltd"}, {},
+                     {"org": "Akamai Connected Cloud", "isp": "Akamai Technologies, Inc."},
+                     {"org": "G-Core Labs S.A."}, {"org": "StackPath, LLC"}):
             self.assertFalse(_is_shared_edge_host(host), host)
+
+    def test_akamai_edge_is_recognised_by_shodans_cdn_tag(self):
+        self.assertTrue(_is_shared_edge_host({"org": "Akamai Technologies, Inc.", "tags": ["cdn"]}))
 
     def test_edge_host_yields_no_cves(self):
         hosts = [

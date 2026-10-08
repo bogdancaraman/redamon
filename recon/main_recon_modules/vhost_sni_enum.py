@@ -465,6 +465,7 @@ def _probe_single_ip(
                 observed=obs,
                 l7_res=l7_res,
                 l4_res=l4_res,
+                size_tolerance=size_tolerance,
             )
             port_anomalies.append({
                 "hostname": hostname,
@@ -661,14 +662,13 @@ def _curl_probe(
     body_hash = hashlib.sha1(body).hexdigest() if body else ""
     # Without the sentinel the body is unknown, so there is nothing to
     # fingerprint and the control filter must not suppress on it.
+    probed = [h for h in (host_header, sni_hostname) if h]
     canon_hash = (
-        _canonical_fingerprint(
-            status, redirect_url, content_type, body,
-            [h for h in (host_header, sni_hostname) if h],
-        )
+        _canonical_fingerprint(status, redirect_url, content_type, body, probed)
         if has_meta else ""
     )
-    return {"status": status, "size": size, "body_hash": body_hash, "canon_hash": canon_hash}
+    return {"status": status, "size": size, "body_hash": body_hash, "canon_hash": canon_hash,
+            "title": _canonical_title(body, probed) if has_meta else None}
 
 
 # Per-request values that make one provider template hash differently on every
@@ -683,10 +683,23 @@ _VOLATILE_RULES: tuple[tuple[re.Pattern, bytes], ...] = (
     (re.compile(rb"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT"), b"{TS}"),
     (re.compile(rb"reference(?:\s|&#32;)*(?:#|&#35;)\s*[0-9a-z.&#;]+", re.I), b"reference #{REF}"),
     (re.compile(rb"\bcache-[a-z0-9-]+-[A-Z]{3}\b"), b"{EDGE}"),
-    (re.compile(rb"(?<![\w+/=-])(?=[\w+/=-]*\d)[\w+/=-]{20,}"), b"{TOKEN}"),
+    # No `/` in a token: two different redirect paths must stay different.
+    (re.compile(rb"(?<![\w+=-])(?=[\w+=-]*\d)[\w+=-]{20,}"), b"{TOKEN}"),
     (re.compile(rb"\b(?=[0-9a-f]*\d)[0-9a-f]{12,}(?:-[A-Z]{3})?\b", re.I), b"{HEX}"),
     (re.compile(rb"\b\d{9,}\b"), b"{NUM}"),
 )
+
+
+_TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def _canonical_title(body: bytes, hostnames: list[str]) -> Optional[str]:
+    """The page <title> with the probed hostname normalised, or None."""
+    m = _TITLE_RE.search(body or b"")
+    if not m:
+        return None
+    title = _replace_hostnames(m.group(1), hostnames)
+    return b" ".join(title.split()).decode("utf-8", "replace")[:200]
 
 
 def _replace_hostnames(data: bytes, hostnames: list[str]) -> bytes:
@@ -817,14 +830,20 @@ def _matches_any_control(probe: Optional[dict], controls: list[dict]) -> bool:
     return False
 
 
-def _same_response(a: Optional[dict], b: Optional[dict]) -> bool:
+def _same_response(a: Optional[dict], b: Optional[dict], size_tolerance: int = 0) -> bool:
     """Same status and, when both carry one, the same canonical fingerprint;
-    without fingerprints, the same size."""
+    without fingerprints, the same size. With `size_tolerance`, fingerprints
+    that differ still count as the same page while the title matches and the
+    sizes stay within it: a live app's response time or counter changes a few
+    bytes, a different backend changes the title or the size."""
     if not a or not b or a["status"] != b["status"]:
         return False
     if a.get("canon_hash") and b.get("canon_hash"):
-        return a["canon_hash"] == b["canon_hash"]
-    return a["size"] == b["size"]
+        if a["canon_hash"] == b["canon_hash"]:
+            return True
+        return (size_tolerance > 0 and a.get("title") == b.get("title")
+                and abs(a["size"] - b["size"]) <= size_tolerance)
+    return abs(a["size"] - b["size"]) <= size_tolerance
 
 
 def _drop_unstable(
@@ -840,11 +859,13 @@ def _drop_unstable(
     concurrency: int,
 ) -> tuple[list[dict], int]:
     """Probe each surviving candidate's firing layer(s) a second time and drop
-    it when the response changed or now matches a control: a transient answer
-    (rotating error page, rate-limit page, load-balancer flap) is not a vhost.
+    it when the status changed or the answer now matches a control: a
+    transient answer (a backend that briefly served something else, a
+    rate-limit page, a load-balancer flap) is not a vhost. A page whose body
+    moves between requests (a response time, a counter, a nonce) is a live
+    application and stays.
 
-    Only fingerprinted probes are re-checked; a probe without a canonical
-    fingerprint has nothing stable to compare. A failed re-probe keeps the
+    Only fingerprinted probes are re-checked. A failed re-probe keeps the
     finding, since a timeout proves nothing either way.
     """
     jobs: list[tuple[int, str, dict]] = []
@@ -874,7 +895,7 @@ def _drop_unstable(
             if again is None:
                 continue
             controls = l4_controls if layer == "L4" else l7_controls
-            if not _same_response(first, again) or _matches_any_control(again, controls):
+            if again["status"] != first["status"] or _matches_any_control(again, controls):
                 unstable.add(idx)
 
     kept = [a for i, a in enumerate(anomalies) if i not in unstable]
@@ -919,6 +940,7 @@ def _classify_severity(
     observed: dict,
     l7_res: Optional[dict],
     l4_res: Optional[dict],
+    size_tolerance: int = 0,
 ) -> str:
     """
     high   -- L7 and L4 serve different pages for the same hostname (proxy
@@ -928,7 +950,7 @@ def _classify_severity(
     low    -- different status code (confirmed hidden vhost)
     info   -- different size only, status unchanged
     """
-    if layer == "both" and l7_res and l4_res and not _same_response(l7_res, l4_res):
+    if layer == "both" and l7_res and l4_res and not _same_response(l7_res, l4_res, size_tolerance):
         return "high"
 
     if _matched_internal_keyword(hostname):

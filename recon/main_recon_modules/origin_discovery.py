@@ -380,6 +380,21 @@ def _port_open(ip: str, port: int, timeout: float) -> bool:
         return False
 
 
+# httpx's cdn labels that mean plain cloud hosting, where the IP serves the
+# application itself: no edge stands in front of it to bypass.
+_CLOUD_HOSTING_LABELS = frozenset({
+    "aws", "amazon", "azure", "gcp", "google", "google-cloud", "oracle", "oci",
+    "digitalocean", "linode", "alibaba", "aliyun", "ibm", "hetzner", "ovh", "vultr",
+})
+
+
+def _is_edge_cdn_label(cdn_name) -> bool:
+    """A known edge CDN, or any other CDN label httpx names that is not plain
+    cloud hosting (an edge outside the shared list: Bunny, KeyCDN, ...)."""
+    name = str(cdn_name or "").strip().lower()
+    return bool(name) and (is_reliable_edge_cdn_name(name) or name not in _CLOUD_HOSTING_LABELS)
+
+
 def _select_fronted_hosts(combined_result: dict, ctx: _RunCtx) -> Dict[str, dict]:
     """CDN/WAF-fronted hosts from http_probe.by_url: an edge CDN named by httpx,
     or an edge IP in a known CDN/WAF range.
@@ -397,7 +412,7 @@ def _select_fronted_hosts(combined_result: dict, ctx: _RunCtx) -> Dict[str, dict
         if not isinstance(info, dict):
             continue
         edge_ip = info.get("ip")
-        named_edge = bool(info.get("is_cdn")) and is_reliable_edge_cdn_name(info.get("cdn"))
+        named_edge = bool(info.get("is_cdn")) and _is_edge_cdn_label(info.get("cdn"))
         # A subdomain a person entered in partial recon is fronted on their word.
         is_cdn = named_edge or bool(info.get("user_fronted")) or bool(edge_ip and _ip_in_cdn_ranges(edge_ip))
         if not is_cdn:
@@ -1104,10 +1119,14 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optio
         cert = _compare_certs(host, ip, port, ctx) if port in _TLS_PORTS else 0.0
         for method, host_header in (("direct", ""), ("host-header", host)):
             resp = _fetch(url, host_header, ctx)
-            # A 4xx from the candidate is a deny wall, not the application: two
-            # identical "access denied" pages say nothing about bypassing anything.
-            if resp is None or resp["status"] >= 400 or _response_has_waf_headers(resp):
+            # A 403 from the candidate is a deny wall: two identical "access
+            # denied" pages say nothing about bypassing anything. Another 4xx
+            # (an API origin's 401/404 at /) can still confirm, but only on an
+            # exact certificate match below, never on its body.
+            if (resp is None or resp["status"] >= 500 or resp["status"] == 403
+                    or _response_has_waf_headers(resp)):
                 continue
+            candidate_error = resp["status"] >= 400
             html_sim = _compare_html(reference["text"], resp["text"])
             hdr = 0.0 if resp["status"] >= 400 else _compare_headers(reference, resp)
             score = _overall_score(html_sim, cert, hdr, reference["status"], resp["status"]) * 100.0
@@ -1117,8 +1136,9 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optio
             # but an exact TLS match (cert >= 0.5 = serial or CN+SAN) is a
             # definitive same-server signal, so confirm on it.
             no_reference_content = (not reference["text"]) or reference["status"] >= 400
-            cert_definitive = no_reference_content and port in _TLS_PORTS and cert >= 0.5
-            if no_reference_content and not cert_definitive:
+            cert_only = no_reference_content or candidate_error
+            cert_definitive = cert_only and port in _TLS_PORTS and cert >= 0.5
+            if cert_only and not cert_definitive:
                 continue
             passed = score > ctx.threshold or cert_definitive
             eff_score = max(score, cert * 100.0) if cert_definitive else score

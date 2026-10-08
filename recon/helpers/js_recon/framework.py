@@ -175,7 +175,10 @@ _CONST_CALL_ARGS = re.compile(rf'\(\s*(?:{_JS_STR}\s*(?:,\s*{_JS_STR}\s*)*)?\)')
 # setTimeout/setInterval whose code string is one literal, not concatenated.
 _CONST_FIRST_ARG = re.compile(rf'\(\s*{_JS_STR}\s*[,)]')
 # An assignment (or React __html) of one literal, e.g. `el.innerHTML = ""`.
+# At the end of a line it is constant only if the next line does not carry the
+# expression on (`+ location.hash`), see _continues_expression.
 _CONST_ASSIGNED = re.compile(rf'\s*{_JS_STR}\s*(?:[;,)}}\]]|$)')
+_CONTINUATION = re.compile(r'\s*(?:[-+*%?:.,|&^]|/(?![/*])|\[)')
 _CONST_HTML_PROP = re.compile(rf'dangerouslySetInnerHTML\s*[:=]\s*\{{?\s*\{{\s*__html\s*:\s*{_JS_STR}\s*\}}')
 
 _CONSTANT_CHECKS = {
@@ -195,12 +198,19 @@ _JS_SOURCE_RE = re.compile(
     r'|window\s*\.\s*name\b'
     r'|URLSearchParams'
     r'|(?:local|session)Storage\s*\.\s*getItem'
-    r'|\b(?:e|ev|evt|event|msg|message)\s*\.\s*data\b'
+    # A message handler hands its event's data to the sink; minified code
+    # names that event anything (`function(t){eval(t.data)}`), so the handler
+    # registration is the signal, plus the descriptive names.
+    r'|addEventListener\s*\(\s*["\']message["\']'
+    r'|\bonmessage\s*='
+    r'|\b(?:event|msg|message)\s*\.\s*data\b'
 )
 _SOURCE_WINDOW = 400
 _EVIDENCE_RADIUS = 120
-# Matches examined per sink type per line; a minified bundle is one line.
+# Non-constant matches examined per sink type per line, and all matches: a
+# minified bundle is one line, and constant shims must not use up the budget.
 _MAX_MATCHES_PER_LINE = 200
+_MAX_SCANNED_PER_LINE = 5000
 
 # Library, runtime and CMS-plugin code the target ships but did not write.
 _VENDOR_URL_RE = re.compile(
@@ -220,7 +230,7 @@ def is_vendor_js_url(url: str) -> bool:
     return bool(_VENDOR_URL_RE.search(path))
 
 
-def _is_constant_sink(sink_type: str, line: str, match: 're.Match') -> bool:
+def _is_constant_sink(sink_type: str, line: str, match: 're.Match', following: str = '') -> bool:
     check = _CONSTANT_CHECKS.get(sink_type)
     if check == 'call':
         paren = line.find('(', match.start())
@@ -229,7 +239,11 @@ def _is_constant_sink(sink_type: str, line: str, match: 're.Match') -> bool:
         paren = line.find('(', match.start())
         return paren != -1 and bool(_CONST_FIRST_ARG.match(line, paren))
     if check == 'assign':
-        return bool(_CONST_ASSIGNED.match(line, match.end()))
+        m = _CONST_ASSIGNED.match(line, match.end())
+        if not m:
+            return False
+        at_line_end = m.end() == len(line) and not line[m.start():m.end()].rstrip().endswith((';', ',', ')', '}', ']'))
+        return not (at_line_end and _CONTINUATION.match(following))
     if check == 'html_prop':
         return bool(_CONST_HTML_PROP.match(line, match.start()))
     return False
@@ -311,11 +325,15 @@ def _pick_sink_match(pattern: 're.Pattern', sink_type: str, line: str, line_offs
     """The best non-constant match of `pattern` on `line`: the first one with a
     source nearby, else the first one. Returns (match, source) or (None, None)."""
     first = None
+    candidates = 0
+    end = line_offset + len(line) + 1
+    following = content[end:end + 200].lstrip()
     for i, m in enumerate(pattern.finditer(line)):
-        if i >= _MAX_MATCHES_PER_LINE:
+        if i >= _MAX_SCANNED_PER_LINE or candidates >= _MAX_MATCHES_PER_LINE:
             break
-        if _is_constant_sink(sink_type, line, m):
+        if _is_constant_sink(sink_type, line, m, following):
             continue
+        candidates += 1
         at = line_offset + m.start()
         near = content[max(0, at - _SOURCE_WINDOW):at + _SOURCE_WINDOW]
         source = _JS_SOURCE_RE.search(near)
@@ -332,7 +350,8 @@ def detect_dom_sinks(content: str, source_url: str) -> list:
 
     A matched sink is a lead, not proof: severity keeps the sink's nominal
     level only when a user-controlled source appears within _SOURCE_WINDOW
-    characters, drops to low otherwise, and to info in library/runtime code.
+    characters (in library code too), drops to low otherwise, and to info in
+    library/runtime code with no source in sight.
     Calls and assignments whose argument is a constant string are skipped.
     The evidence is the text around the match, not the start of the line,
     since a minified bundle is one line.
@@ -358,12 +377,16 @@ def detect_dom_sinks(content: str, source_url: str) -> list:
                     continue
                 seen.add(key)
 
-                if vendor:
+                if source:
+                    # A library the target ships can be the vulnerable code
+                    # (a hash-reading jQuery plugin), so a source keeps the
+                    # severity there too; only the confidence says "library".
+                    final_severity = severity
+                    confidence = 'low' if vendor else 'medium'
+                    note = f'user-controlled source nearby: {source}' + (', in a library/runtime file' if vendor else '')
+                elif vendor:
                     final_severity, confidence = 'info', 'low'
                     note = 'in a library/runtime file'
-                elif source:
-                    final_severity, confidence = severity, 'medium'
-                    note = f'user-controlled source nearby: {source}'
                 else:
                     final_severity = min(severity, 'low', key=_SEVERITY_RANK.__getitem__)
                     confidence = 'low'

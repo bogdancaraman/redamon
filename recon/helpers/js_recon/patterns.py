@@ -453,11 +453,21 @@ _GENERIC_VALUE_RE = {
 _PLACEHOLDER_VALUE = re.compile(
     r'^(?:x{3,}|\*{3,}|\.{3,}|changeme|change[_-]?me|example|sample|dummy|placeholder|test|testing'
     r'|todo|tbd|none|null|undefined|true|false|password|passwd|secret|token|api[_-]?key'
-    r'|(?:your|enter)[_-]?\w*|my[_-]?(?:key|token|secret|password|api[_-]?key)'
+    r'|(?:your|enter)[_-]\w+|my[_-]?(?:key|token|secret|password|api[_-]?key)'
     r'|<[^>]*>|\$\{[^}]*\}|\{\{[^}]*\}\}|%\w+%|__\w+__)$',
     re.IGNORECASE,
 )
 _I18N_KEY = re.compile(r'^[A-Za-z_]+(?:\.[A-Za-z_]+)+$')
+# Shapes that are code, not a secret: a route, a CSS selector, an env-var or
+# template reference, markup. A credential that merely STARTS with $ or #
+# (`$Pr0d-Db!2024`) has none of these shapes and is kept.
+_CODE_SHAPED_VALUE = re.compile(
+    r'^(?:/[\w\-./:?=&%#~]*'          # a route or path
+    r'|[#.][A-Za-z][A-Za-z_-]*'        # #id / .class (a digit mix reads as a password)
+    r'|\[[^\]]+\]'                     # [name=password]
+    r'|\$[A-Za-z_]\w*'                 # $ENV_VAR
+    r'|<[^>]*>)$'                     # markup
+)
 _FIELD_NAME_WORDS = ('password', 'passwd', 'pwd', 'secret', 'token', 'apikey', 'api_key', 'api-key')
 
 
@@ -470,11 +480,15 @@ def _generic_value_is_noise(name: str, matched_text: str) -> bool:
         return False
     m = value_re.search(matched_text)
     value = (m.group(1) if m else '').strip()
-    if not value or any(c.isspace() for c in value):
+    if not value:
         return True
-    if _PLACEHOLDER_VALUE.match(value) or _I18N_KEY.match(value):
+    # UI text is prose: words without digits, or a sentence. A passphrase like
+    # "Summer 2024!" has a space too, and is kept.
+    if any(c.isspace() for c in value) and (not re.search(r'\d', value) or len(value.split()) >= 3):
         return True
-    if value[0] in '/#.[<$({' or '://' in value:
+    if _PLACEHOLDER_VALUE.match(value) or _I18N_KEY.match(value) or _CODE_SHAPED_VALUE.match(value):
+        return True
+    if '${' in value or '://' in value:
         return True
     if re.fullmatch(r'[A-Za-z_-]+', value) and any(w in value.lower() for w in _FIELD_NAME_WORDS):
         return True

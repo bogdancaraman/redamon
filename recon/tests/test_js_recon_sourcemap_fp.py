@@ -50,6 +50,7 @@ def _resp(status=200, body="", ctype="application/json"):
     r.status_code = status
     r.headers = {"Content-Type": ctype} if ctype else {}
     r.text = body
+    r.content = body.encode("utf-8")
     return r
 
 
@@ -94,6 +95,14 @@ class TestFetchProvesASourceMap(unittest.TestCase):
         data, out = _fetch(_resp(200, json.dumps(FIRST_PARTY_MAP), "binary/octet-stream"))
         self.assertEqual(data["sources"], FIRST_PARTY_MAP["sources"])
         self.assertEqual(out["reason"], "ok")
+
+    def test_map_mislabelled_as_html_is_still_a_map(self):
+        data, _ = _fetch(_resp(200, json.dumps(FIRST_PARTY_MAP), "text/html"))
+        self.assertIsNotNone(data)
+
+    def test_bom_prefixed_map_is_accepted(self):
+        data, _ = _fetch(_resp(200, "\ufeff" + json.dumps(FIRST_PARTY_MAP)))
+        self.assertIsNotNone(data)
 
     def test_xssi_prefixed_map_is_accepted(self):
         data, _ = _fetch(_resp(200, ")]}'\n" + json.dumps(FIRST_PARTY_MAP)))

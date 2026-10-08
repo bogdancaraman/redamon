@@ -116,6 +116,7 @@ class TestDomSinkFields(unittest.TestCase):
         self.assertEqual((props["title"], props["line"], props["column"]), ("innerHTML", 3, 42))
         self.assertEqual((props["user_source"], props["vendor"], props["nominal_severity"]),
                          ("location.hash", False, "high"))
+        self.assertIs(props["third_party"], False)
         self.assertEqual(props["evidence"], "…out.innerHTML=location.hash…")
         _assert_flat(self, props)
 

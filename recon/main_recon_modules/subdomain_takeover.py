@@ -47,7 +47,7 @@ from recon.helpers import (
     resolve_cname_target,
     score_finding,
 )
-from recon.helpers.takeover_helpers import provider_cname_suffixes, same_provider_family
+from recon.helpers.takeover_helpers import same_provider_family
 
 
 def _hosts_answering_2xx(recon_data: dict) -> set[str]:
@@ -282,13 +282,11 @@ def run_subdomain_takeover(
                 if cname_provider:
                     n["takeover_provider"] = cname_provider
             elif cname_provider and not same_provider_family(cname_provider, current_provider):
+                # Only a CNAME that names ANOTHER known provider disagrees: the
+                # suffix table is not complete (regional S3 endpoints, a SaaS's
+                # second edge domain), so an unknown CNAME proves nothing.
                 n["provider_mismatch"] = True
                 n["cname_provider"] = cname_provider
-            elif not cname_provider and provider_cname_suffixes(current_provider):
-                # The claimed provider's resources live under known suffixes and
-                # the CNAME carries none of them (e.g. a body fingerprint naming
-                # one SaaS on a host that points at another's mail domain).
-                n["provider_mismatch"] = True
             if cname_validation:
                 try:
                     probe = resolve_cname_target(cname)

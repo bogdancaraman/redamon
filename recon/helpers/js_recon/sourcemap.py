@@ -120,6 +120,7 @@ _XSSI_PREFIX = re.compile(r"^\s*\)\]\}'?[^\n]*\n?")
 
 
 def _parse_sourcemap_body(text: str, outcome: dict) -> Optional[dict]:
+    text = text.lstrip('\ufeff')
     if text.lstrip().startswith('<'):
         outcome['reason'] = 'html'
         return None
@@ -189,12 +190,13 @@ def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None
     if resp.status_code != 200:
         outcome['reason'] = f'http_{resp.status_code}'
         return None
-    # Any type but HTML: S3 and CDNs often serve .map as octet-stream.
-    if 'text/html' in (resp.headers.get('Content-Type') or '').lower():
-        outcome['reason'] = 'html'
-        return None
+    # Any content type: S3 and CDNs serve maps as octet-stream, and the body
+    # check rejects an HTML page whatever it is labelled. The bytes are decoded
+    # directly, so a multi-MB map skips charset sniffing.
     try:
-        return _parse_sourcemap_body(resp.text, outcome)
+        raw = resp.content
+        text = raw.decode('utf-8', 'replace') if isinstance(raw, (bytes, bytearray)) else (resp.text or '')
+        return _parse_sourcemap_body(text, outcome)
     except Exception:
         outcome['reason'] = 'not_json'
         return None

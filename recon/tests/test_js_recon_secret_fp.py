@@ -82,6 +82,18 @@ class TestGenericPatternsJudgeTheValue(unittest.TestCase):
         # A weak real password is still a hardcoded password.
         self.assertEqual(generic('password = "admin123"'), ["Hardcoded Password"])
 
+    def test_real_values_with_spaces_or_leading_symbols_still_report(self):
+        # Each of these was dropped by an earlier, broader filter.
+        for js in ('DB_PASSWORD = "Summer 2024!"', 'password = "$Pr0d-Db!2024"',
+                   'password = "#Welc0me2024"', 'pwd = "Enterprise2024"'):
+            self.assertIn("Hardcoded Password", generic(js), js)
+        self.assertIn("Generic Token", generic('auth_token: "enterprise_7f3a9b2c4d5e6f70"'))
+
+    def test_env_var_and_selector_shapes_are_still_noise(self):
+        for js in ('password = "$DB_PASSWORD"', 'secret: ".secret-input"', 'password = "#pw"',
+                   'secret: "[name=client_secret]"'):
+            self.assertEqual(generic(js), [], js)
+
     def test_filter_reads_the_value_not_the_line(self):
         # UI text on the same line must not hide the credential beside it.
         js = 'label: "Forgot your password?", password = "Pr0d!Passw0rd#9"'

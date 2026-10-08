@@ -327,26 +327,47 @@ def _first_party_scope(combined_result: dict) -> _FirstParty:
     return _FirstParty(roots=tuple(roots), hosts=frozenset(hosts))
 
 
+# Generic CDN and object-storage hostnames. A target often serves its OWN
+# bundles from one (a CloudFront distribution, an S3 bucket), so a script there
+# is not a third party's; only a vendor-branded host is.
+_GENERIC_ASSET_HOST_SUFFIXES = (
+    '.cloudfront.net', '.azureedge.net', '.azurefd.net', '.akamaized.net', '.akamaihd.net',
+    '.b-cdn.net', '.fastly.net', '.fastlylb.net', '.amazonaws.com', '.googleapis.com',
+    '.blob.core.windows.net', '.r2.dev', '.pages.dev', '.workers.dev', '.vercel.app',
+    '.netlify.app', '.web.app', '.firebaseapp.com', '.kxcdn.com', '.cdn77.org',
+    '.digitaloceanspaces.com', '.cdn.cloudflare.net',
+)
+
+
 def _is_third_party_url(url: str, first_party: _FirstParty) -> bool:
-    """True only when the URL's host is known and outside the target. A run
-    with no roots and no hosts cannot tell, so nothing is called third-party."""
+    """True only when the URL's host is known, outside the target and not a
+    generic CDN/storage host. A run with no roots and no hosts cannot tell, so
+    nothing is called third-party."""
     if not first_party.roots and not first_party.hosts:
         return False
     host = _host_of(url)
     if not host or urlparse(url).scheme not in ('http', 'https'):
         return False
-    if host in first_party.hosts:
+    if host in first_party.hosts or host.endswith(_GENERIC_ASSET_HOST_SUFFIXES):
         return False
     return not any(host == r or host.endswith(f'.{r}') for r in first_party.roots)
 
 
 def _downgrade_third_party_findings(results: dict, combined_result: dict) -> None:
-    """A DOM sink in, or a source map of, a script served from someone else's
-    host (an analytics or marketing loader the page embeds) is that vendor's
-    code, not the target's: keep it visible, at info."""
+    """A DOM sink in, or a source map of, a script served from a vendor's host
+    (an analytics or marketing loader the page embeds) is that vendor's code,
+    not the target's: keep it visible, at info. A sink with a user-controlled
+    source next to it keeps its severity, since the target ships that code to
+    its users either way."""
     first_party = _first_party_scope(combined_result)
     for sink in results.get('dom_sinks') or []:
-        if sink.get('vendor') or not _is_third_party_url(sink.get('source_url', ''), first_party):
+        if not _is_third_party_url(sink.get('source_url', ''), first_party):
+            continue
+        sink['third_party'] = True
+        if sink.get('user_source'):
+            sink['confidence'] = 'low'
+            continue
+        if sink.get('vendor'):
             continue
         sink['vendor'] = True
         sink['severity'] = 'info'

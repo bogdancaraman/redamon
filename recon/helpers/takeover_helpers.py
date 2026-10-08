@@ -132,14 +132,6 @@ def same_provider_family(a: Optional[str], b: Optional[str]) -> bool:
     return bool(a) and bool(b) and (a == b or a.startswith(b + "-") or b.startswith(a + "-"))
 
 
-def provider_cname_suffixes(provider: Optional[str]) -> tuple[str, ...]:
-    """The CNAME suffixes a provider's resources live under (its whole family),
-    or () when none are known."""
-    return tuple(
-        signal for signal, slug in PROVIDER_FROM_SIGNAL.items()
-        if signal.startswith(".") and same_provider_family(slug, provider)
-    )
-
 # Providers where a claim is a single-step registration (name-based namespace,
 # no verification challenge). A confirmed match on these is auto-exploitable
 # and gets a confidence bump.
