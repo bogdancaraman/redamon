@@ -1000,6 +1000,16 @@ def _rule_confidence(finding: dict, facts: ProjectFacts) -> Factor:
             return Factor(0.1, "GuardDog could not analyse this package")
         return Factor(0.25, "a GuardDog heuristic, not a confirmation")
 
+    if source in ("shodan", "shodan_api", "internetdb"):
+        method = _lower(finding.get("detection_method"))
+        if method == "passive_verified":
+            return Factor(0.75, "Shodan verified this CVE on the service")
+        if method == "passive_version_match":
+            return Factor(0.4, "a CVE matched to a service banner's product and version")
+        # Rows written before the grading carry no method, and every one of
+        # them was an IP-level catalog match.
+        return Factor(0.25, "a CVE from the IP's catalog, with no service or version observed")
+
     if source == "origin_discovery":
         confidence_score = as_float(finding.get("confidence_score"))
         if confidence_score is not None and confidence_score >= 70:

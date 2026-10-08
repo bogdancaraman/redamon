@@ -26,6 +26,51 @@ from graph_db.mixins.recon.scope import attach_roots, root_for_host
 from urllib.parse import urlparse as _urlparse
 
 
+def _cvss_severity(cvss) -> str | None:
+    """CVSS v3 qualitative rating. None when there is no score: a blanket
+    severity on an ungraded advisory buries the graded ones."""
+    try:
+        score = float(cvss)
+    except (TypeError, ValueError):
+        return None
+    if score >= 9.0:
+        return "critical"
+    if score >= 7.0:
+        return "high"
+    if score >= 4.0:
+        return "medium"
+    if score > 0:
+        return "low"
+    return None
+
+
+def _shodan_cve_props(cve_entry: dict) -> dict:
+    """Properties a Shodan/InternetDB passive CVE carries. A None value
+    removes the property on a refresh, so a field the source stopped
+    reporting does not linger."""
+    cve_id = cve_entry.get("cve_id", "")
+    cvss = cve_entry.get("cvss")
+    try:
+        cvss = float(cvss) if cvss is not None else None
+    except (TypeError, ValueError):
+        cvss = None
+    port = cve_entry.get("port")
+    return {
+        "name": cve_id,
+        "cves": [cve_id],
+        # Rows written before this grading carry no detection_method; the
+        # Priority Board reads that as a catalog match, which they all were.
+        "detection_method": cve_entry.get("detection_method") or "passive_catalog",
+        "verified": bool(cve_entry.get("verified")),
+        "target_ip": cve_entry.get("ip") or None,
+        "target_port": int(port) if isinstance(port, int) or (isinstance(port, str) and port.isdigit()) else None,
+        "product": cve_entry.get("product") or None,
+        "version": cve_entry.get("version") or None,
+        "cvss_score": cvss,
+        "severity": _cvss_severity(cvss),
+    }
+
+
 def _split_url(url: str) -> tuple[str, str]:
     """(base_url, path), where base_url is scheme://netloc and path defaults to
     '/'. Query and fragment are dropped.
@@ -391,18 +436,32 @@ class OsintMixin:
                     continue
                 vuln_id = f"shodan-{cve_id}-{ip}"
                 try:
+                    # Refreshed on every run that still reports it, so a row
+                    # written before the evidence fields existed gains them.
                     session.run(
                         """
                         MERGE (v:Vulnerability {id: $vuln_id, user_id: $user_id,
                                                 project_id: $project_id})
-                        ON CREATE SET v.source = $source, v.name = $cve_id,
-                                      v.cves = [$cve_id], v.user_id = $user_id,
-                                      v.project_id = $project_id, v.updated_at = datetime()
+                        ON CREATE SET v.source = $source
+                        SET v += $props, v.updated_at = datetime()
                         """,
-                        vuln_id=vuln_id, cve_id=cve_id, source=cve_source,
+                        vuln_id=vuln_id, source=cve_source, props=_shodan_cve_props(cve_entry),
                         user_id=user_id, project_id=project_id
                     )
                     stats["vulnerabilities_created"] += 1
+
+                    if cve_entry.get("product") and cve_entry.get("port"):
+                        session.run(
+                            """
+                            MATCH (svc:Service {name: $product, port_number: $port, ip_address: $ip,
+                                                user_id: $user_id, project_id: $project_id})
+                            MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
+                            MERGE (svc)-[:HAS_VULNERABILITY]->(v)
+                            """,
+                            product=cve_entry["product"], port=cve_entry["port"], ip=ip,
+                            vuln_id=vuln_id, user_id=user_id, project_id=project_id,
+                        )
+                        stats["relationships_created"] += 1
 
                     session.run(
                         """

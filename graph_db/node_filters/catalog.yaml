@@ -421,6 +421,11 @@ kinds:
         label: Provider
         values: [shodan_api, internetdb, shodan_host_lookup, shodan, netlas, criminalip]
       has_exploit: { type: bool, prop: has_exploit, label: Public exploit (Netlas) }
+      detection_method:
+        type: enum
+        prop: detection_method
+        label: Evidence (Shodan)
+        values: [passive_verified, passive_version_match, passive_catalog]
     overlaps:
       - { setting: cveLookupMinCvss, tab: cve }
     examples:
@@ -428,13 +433,18 @@ kinds:
         all:
           - { field: cve_year, op: lt, value: 2015 }
           - { field: has_exploit, op: is_false }
+      - name: Shodan CVEs with no service or version seen
+        all: [{ field: detection_method, op: in, value: [passive_catalog] }]
     notes:
       - >-
-        Shodan and CriminalIP write these nodes once and never refresh them, so a
-        scan-time sweep only sees new ones; apply to the current graph to reach
-        the rest. They are not recon finding sources, so in this phase only
-        applying to the current graph reaches them at all.
-      - Only Netlas records a severity or a public exploit; the others carry the CVE alone.
+        CriminalIP writes these nodes once and never refreshes them, and none of
+        these providers is a recon finding source, so in this phase only applying
+        to the current graph reaches them at all.
+      - >-
+        Netlas records a severity and a public exploit; Shodan records a severity
+        only when its banner gave a CVSS score, plus the evidence grade
+        (detection_method): a Shodan-verified banner, a banner's product and
+        version, or the IP's catalog alone. CriminalIP carries the CVE alone.
 
   vuln.osv:
     group: vulnerability

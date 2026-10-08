@@ -12,11 +12,12 @@ Features:
   - Domain DNS: Subdomain enumeration + DNS records (paid Shodan plan)
   - Passive CVEs: Extract known CVEs from Shodan host data
 """
+import re
 import threading
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -259,6 +260,7 @@ def _lookup_single_ip(ip: str, use_internetdb: bool, api_key: str, key_rotator, 
                         "city": data.get("city"),
                         "ports": data.get("ports", []),
                         "vulns": list(data.get("vulns", {}).keys()) if isinstance(data.get("vulns"), dict) else data.get("vulns", []),
+                        "tags": data.get("tags", []) or [],
                         "services": [],
                         "source": "shodan_api",
                     }
@@ -271,6 +273,7 @@ def _lookup_single_ip(ip: str, use_internetdb: bool, api_key: str, key_rotator, 
                             "banner": (svc.get("data", "") or "")[:500],
                             "module": svc.get("_shodan", {}).get("module", ""),
                             "ssl": _normalize_shodan_ssl(svc.get("ssl")),
+                            "vulns": _service_vulns(svc.get("vulns")),
                         })
                     logger.info(f"  Shodan host lookup: {ip} — {len(host_entry['ports'])} ports, "
                                 f"{len(host_entry['vulns'])} vulns")
@@ -457,31 +460,106 @@ def _run_domain_dns(domain: str, api_key: str, key_rotator=None) -> dict:
     return result
 
 
+def _service_vulns(raw) -> list[dict]:
+    """A Shodan banner's `vulns` map ({CVE: {cvss, verified, ...}}) as a list."""
+    if not isinstance(raw, dict):
+        return []
+    out = []
+    for cve_id, info in raw.items():
+        info = info if isinstance(info, dict) else {}
+        try:
+            cvss = float(info["cvss"]) if info.get("cvss") is not None else None
+        except (TypeError, ValueError):
+            cvss = None
+        out.append({"cve_id": cve_id, "cvss": cvss, "verified": bool(info.get("verified"))})
+    return out
+
+
+# Providers whose IPs front many unrelated tenants. A CVE Shodan correlates to
+# such an IP describes whatever answered there for whichever customer, not the
+# target; our own CDN ranges know only Cloudflare, so Shodan's attribution is
+# used as well.
+_SHARED_EDGE_ORG = re.compile(
+    r"cloudflare|fastly|akamai|vercel|netlify|incapsula|imperva|sucuri|stackpath"
+    r"|edgecast|edgio|limelight|bunny|cdn77|g-core|gcore|cloudfront",
+    re.IGNORECASE,
+)
+
+
+def _is_shared_edge_host(host: dict) -> bool:
+    """True when Shodan itself tags the IP as a CDN, or attributes it to a
+    shared edge provider."""
+    tags = {str(t).lower() for t in (host.get("tags") or [])}
+    if "cdn" in tags:
+        return True
+    org = " ".join(str(host.get(k) or "") for k in ("org", "isp"))
+    return bool(_SHARED_EDGE_ORG.search(org))
+
+
+def _passive_cve_entry(cve_id: str, ip: str, source: str, svc: Optional[dict] = None,
+                       cvss: Optional[float] = None, verified: bool = False) -> dict:
+    """One CVE as the graph writer stores it.
+
+    `detection_method` grades the evidence: passive_verified (Shodan checked
+    it), passive_version_match (a banner with product and version), or
+    passive_catalog (the IP's CVE list alone, no service or version seen).
+    """
+    product = (svc or {}).get("product") or None
+    version = (svc or {}).get("version") or None
+    if verified:
+        method = "passive_verified"
+    elif product and version:
+        method = "passive_version_match"
+    else:
+        method = "passive_catalog"
+    return {
+        "cve_id": cve_id,
+        "ip": ip,
+        "source": source,
+        "port": (svc or {}).get("port"),
+        "product": product,
+        "version": version,
+        "cvss": cvss,
+        "verified": verified,
+        "detection_method": method,
+    }
+
+
 def _extract_passive_cves(hosts: list[dict], ips: list[str], api_key: str, key_rotator=None, max_workers: int = 5) -> list[dict]:
     """Extract CVEs from host lookup data.
 
     If host data exists (from host lookup, which may be InternetDB data),
     CVEs are extracted directly. If no host data, queries InternetDB per-IP
     (free, no key required) using parallel workers.
+
+    A banner's own CVEs carry its port, product and version; the IP-level
+    list fills in the rest as catalog matches. A shared CDN/edge IP yields
+    none: its banners belong to the provider and its other tenants.
     """
     cves: list[dict] = []
     seen_cve_ip: set[tuple[str, str]] = set()
+    skipped_edge = 0
 
     # If host lookup already ran, extract from existing data (works for both
     # Shodan API and InternetDB sources since both populate 'vulns')
     if hosts:
         for host in hosts:
             ip = host["ip"]
+            if _is_shared_edge_host(host):
+                skipped_edge += 1
+                continue
             source = host.get("source", "shodan_host_lookup")
+            for svc in host.get("services", []):
+                for v in svc.get("vulns") or []:
+                    key = (v["cve_id"], ip)
+                    if key not in seen_cve_ip:
+                        seen_cve_ip.add(key)
+                        cves.append(_passive_cve_entry(v["cve_id"], ip, source, svc, v.get("cvss"), v.get("verified", False)))
             for cve_id in host.get("vulns", []):
                 key = (cve_id, ip)
                 if key not in seen_cve_ip:
                     seen_cve_ip.add(key)
-                    cves.append({
-                        "cve_id": cve_id,
-                        "ip": ip,
-                        "source": source,
-                    })
+                    cves.append(_passive_cve_entry(cve_id, ip, source))
     else:
         # No host data -- query InternetDB directly (free, no key needed)
         print("[*][Shodan] Querying InternetDB for passive CVEs (free)")
@@ -495,16 +573,17 @@ def _extract_passive_cves(hosts: list[dict], ips: list[str], api_key: str, key_r
         with ThreadPoolExecutor(max_workers=workers) as executor:
             for ip, idb in executor.map(_query_cves, ips):
                 if idb:
+                    if _is_shared_edge_host(idb):
+                        skipped_edge += 1
+                        continue
                     for cve_id in idb.get("vulns", []):
                         key = (cve_id, ip)
                         if key not in seen_cve_ip:
                             seen_cve_ip.add(key)
-                            cves.append({
-                                "cve_id": cve_id,
-                                "ip": ip,
-                                "source": "internetdb",
-                            })
+                            cves.append(_passive_cve_entry(cve_id, ip, "internetdb"))
 
+    if skipped_edge:
+        print(f"[*][Shodan] Skipped passive CVEs on {skipped_edge} shared CDN/edge IP(s)")
     logger.info(f"  Shodan passive CVEs: {len(cves)} CVEs across {len(set(c['ip'] for c in cves))} IPs")
     return cves
 
@@ -620,12 +699,14 @@ def drop_cdn_ips(shodan_data: dict, combined_result: dict) -> int:
     edge's ports and CVEs belong to the CDN, not to the target. Domain DNS
     records are kept: they say what the names resolve to, not what runs there.
     """
-    cdn_ips = collect_cdn_ips(combined_result)
+    hosts = shodan_data.get("hosts") or []
+    cdn_ips = collect_cdn_ips(combined_result) | {
+        h.get("ip") for h in hosts if h.get("ip") and _is_shared_edge_host(h)
+    }
 
     def is_cdn(ip) -> bool:
         return bool(ip) and (ip in cdn_ips or in_published_cdn_range(ip))
 
-    hosts = shodan_data.get("hosts") or []
     reverse_dns = shodan_data.get("reverse_dns") or {}
     cves = shodan_data.get("cves") or []
     dropped = ({h.get("ip") for h in hosts if is_cdn(h.get("ip"))}

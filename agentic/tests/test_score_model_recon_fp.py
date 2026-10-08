@@ -64,5 +64,52 @@ class TestJsReconClasses(unittest.TestCase):
         self.assertNotIn(sm.SCORE_MODEL_VERSION, ("v3.2.0", "v3.3.0"))
 
 
+def shodan_cve(**kw):
+    row = {"id": "shodan-CVE-2021-23017-203.0.113.9", "label": "Vulnerability", "source": "shodan_api",
+           "name": "CVE-2021-23017", "cve_ids": ["CVE-2021-23017"], "host": "h1"}
+    row.update(kw)
+    return row
+
+
+class TestShodanPassiveCves(unittest.TestCase):
+    """Shodan's IP-keyed CVE list is a catalog correlation: no service, no
+    version, no test. 160 such rows with blank severity sat in the plan tier."""
+
+    def c_of(self, row):
+        return sm.confidence(row, sm.ProjectFacts()).value
+
+    def test_catalog_match_is_a_low_confidence_lead(self):
+        self.assertEqual(self.c_of(shodan_cve(detection_method="passive_catalog")), 0.25)
+
+    def test_rows_written_before_the_grading_are_catalog_matches(self):
+        for source in ("shodan_api", "internetdb", "shodan"):
+            with self.subTest(source=source):
+                self.assertEqual(self.c_of(shodan_cve(source=source)), 0.25)
+
+    def test_banner_version_match_is_a_passive_guess(self):
+        self.assertEqual(self.c_of(shodan_cve(detection_method="passive_version_match")), 0.4)
+
+    def test_shodan_verified_is_credible(self):
+        self.assertEqual(self.c_of(shodan_cve(detection_method="passive_verified")), 0.75)
+
+    def test_catalog_match_leaves_the_plan_tier(self):
+        facts = sm.ProjectFacts(live_hosts={"h1"})
+        legacy = sm.score(shodan_cve(), facts)
+        graded = sm.score(shodan_cve(detection_method="passive_version_match", severity="high",
+                                     cvss_score=7.7), facts)
+        self.assertEqual(legacy.tier, "T4")
+        self.assertEqual(graded.tier, "T3")
+
+    def test_proof_still_wins(self):
+        facts = sm.ProjectFacts(proven_cve_ids={"CVE-2021-23017"})
+        self.assertEqual(sm.confidence(shodan_cve(), facts).value, 1.0)
+
+    def test_other_passive_sources_are_unchanged(self):
+        for source in ("criminalip", "netlas", "censys"):
+            with self.subTest(source=source):
+                self.assertEqual(self.c_of(shodan_cve(source=source)), 0.4)
+
+
+
 if __name__ == "__main__":
     unittest.main()

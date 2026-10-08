@@ -172,10 +172,17 @@ class TestConfidence(unittest.TestCase):
                     detector_name="AWS"), sm.ProjectFacts()).value, 0.6)
 
     def test_a_passive_version_guess_is_weak(self):
-        for source in ("shodan", "internetdb", "criminalip", "netlas"):
+        for source in ("criminalip", "netlas"):
             with self.subTest(source=source):
                 self.assertEqual(sm.confidence(
                     finding(source=source), sm.ProjectFacts()).value, 0.4)
+        # Shodan grades its own evidence (test_score_model_recon_fp.py); a
+        # banner's product+version match is the same weak guess.
+        for source in ("shodan", "shodan_api", "internetdb"):
+            with self.subTest(source=source):
+                self.assertEqual(sm.confidence(
+                    finding(source=source, detection_method="passive_version_match"),
+                    sm.ProjectFacts()).value, 0.4)
 
     def test_an_unknown_source_gets_the_default_and_a_warning(self):
         result = sm.score(finding(source="brand_new_scanner_9000"))
