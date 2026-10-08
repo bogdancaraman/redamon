@@ -9,8 +9,9 @@ resolved ``temperature`` attribute. This locks two decisions:
     so we let each model use its own default. Regression guard for the reported
     "invalid temperature: only 1 is allowed" bug.
   * Every other OpenAI-compatible provider still pins ``temperature=0`` for
-    reproducibility. Models that reject 0 are handled at call time by the
-    ``heal_llm_param_error`` self-heal, not by weakening the default here.
+    reproducibility, except OpenAI reasoning families (o-series, gpt-5+),
+    which omit it. Anything else that rejects 0 is handled at call time by
+    the ``heal_llm_param_error`` self-heal.
 
 Run (inside agent container):
     docker run --rm -v "/path/agentic:/app" \\
@@ -70,13 +71,9 @@ class SetupLlmTemperatureSmokeTests(unittest.TestCase):
                     f"{model_name}: reproducibility default temperature=0 must hold",
                 )
 
-    def test_openai_reasoning_model_still_constructs_with_zero(self):
-        # We do NOT special-case o-series at construction (no per-model
-        # allowlist) — the self-heal drops temperature at call time. Construction
-        # must therefore still succeed and carry temperature=0.
+    def test_openai_reasoning_model_omits_temperature(self):
+        # o-series / gpt-5+ only accept the default (1); setup_llm drops the
+        # param at construction so paths without the self-heal (provider test
+        # endpoint) don't 400.
         llm = setup_llm("o3-mini", openai_api_key="fake-key-abc")
-        self.assertEqual(llm.temperature, 0)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertIsNone(llm.temperature)
