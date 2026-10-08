@@ -1570,7 +1570,9 @@ class TestFalsePositiveRegressions(unittest.TestCase):
         self.assertLess(conf, 0.8, rec)
 
     def test_page_drift_between_baseline_and_poison_is_not_poisoning(self):
-        rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"}, TimeDriftSession(), {})
+        # The page drifts right after the vector's own baseline samples.
+        rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"},
+                                     TimeDriftSession(flip_after=confirm._PROFILE_SAMPLES), {})
         self.assertEqual(rec["differential_change"], "body")  # the drift looks like a change...
         self.assertEqual(rec["control_check"], "baseline_drift")  # ...a fresh clean slot shows too
         self.assertFalse(rec["persisted_on_clean"])
@@ -1592,7 +1594,9 @@ class TestFalsePositiveRegressions(unittest.TestCase):
         self._assert_below_floor(rec)
 
     def test_one_off_origin_error_is_not_cpdos(self):
-        rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"}, FlakyPoisonSession(), {})
+        # The glitch hits the render the poison triggers, right after the baseline.
+        rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"},
+                                     FlakyPoisonSession(fail_on_render=confirm._PROFILE_SAMPLES + 1), {})
         self.assertEqual(rec["differential_change"], "status")
         self.assertEqual(rec["control_check"], "not_reproduced")
         self._assert_below_floor(rec)
@@ -1764,12 +1768,23 @@ class TestScannerIsolationAndProfile(unittest.TestCase):
         self.assertEqual(cs["summary"]["total_findings"], 0)
         self.assertEqual(cs["summary"]["cacheable_urls"], 1)
 
+    def test_the_url_record_says_its_baseline_was_unstable(self):
+        entry = self._run(PairedVariantSession())["by_target"][self._URL]
+        self.assertIs(entry["baseline_stable"], False)
+        self.assertIn("body", entry["untrusted_dimensions"])
+
+    def test_a_stable_page_records_a_stable_baseline(self):
+        entry = self._run(BodyPoisonCacheSession())["by_target"][self._URL]
+        self.assertIs(entry["baseline_stable"], True)
+        self.assertEqual(entry["untrusted_dimensions"], [])
+
     def test_shared_profile_is_what_stops_a_scripted_variant_page(self):
-        # A vector's own two-slot baseline is fooled: this alone writes a false finding...
+        # A vector sampling its own baseline takes the full profile too, so even
+        # without the shared one it is not fooled...
         alone = confirm.confirm_vector(TestFalsePositiveRegressions._SCHEME, {"param": "rdmncb"},
                                        ScriptedVariantSession(), {})
-        self.assertEqual(scoring.score_finding(alone)[1], "Strong")
-        # ...while the scan hands every vector the URL's one shared profile.
+        self.assertNotEqual(scoring.score_finding(alone)[1], "Strong")
+        # ...and the scan hands every vector the URL's one shared profile.
         seen = []
         orig = confirm.confirm_vector
 

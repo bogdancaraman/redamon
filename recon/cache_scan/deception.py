@@ -24,6 +24,10 @@ from recon.helpers.auth_profile import auth_header_lines, profile_from_settings
 # tried because caches and origins disagree on which starts the "static file".
 _DECEPTION_SUFFIXES = (".css", ".js", ".jpg")
 
+# Authenticated and anonymous reads taken to prove the page is personalised. With
+# three of each, a two-variant public page passes about 3% of the time, not 50%.
+_PERSONALISATION_SAMPLES = 3
+
 
 def _auth_headers_for(url: str, settings: dict) -> dict:
     """The in-scope auth headers for this URL's host, or {} when none apply."""
@@ -67,11 +71,18 @@ def deception_probe(url: str, oracle_info: dict, session, settings: dict,
                            verify=verify_ssl, allow_redirects=False)
 
     try:
-        # 1. The page must be personalised: authed content differs from anonymous.
-        authed = _get(add_cache_buster(url, "rdmncb", uuid.uuid4().hex[:8]), auth)
-        anon = _get(add_cache_buster(url, "rdmncb", uuid.uuid4().hex[:8]))
-        authed_body = authed.text or ""
-        if authed.status_code >= 400 or not authed_body or authed_body == (anon.text or ""):
+        # 1. The page must be personalised: the authenticated view is stable and no
+        #    anonymous view matches it. One pair is not enough: a public page that
+        #    alternates between two variants (an A/B test, a rotating banner) differs
+        #    from itself on one pair half the time, and its cached copy leaks nothing.
+        authed = [_get(add_cache_buster(url, "rdmncb", uuid.uuid4().hex[:8]), auth)
+                  for _ in range(_PERSONALISATION_SAMPLES)]
+        anon = [_get(add_cache_buster(url, "rdmncb", uuid.uuid4().hex[:8]))
+                for _ in range(_PERSONALISATION_SAMPLES)]
+        authed_body = authed[0].text or ""
+        if (any(a.status_code >= 400 for a in authed) or not authed_body
+                or any((a.text or "") != authed_body for a in authed[1:])
+                or any((n.text or "") == authed_body for n in anon)):
             return None
 
         marker = "rdmn" + uuid.uuid4().hex[:6]

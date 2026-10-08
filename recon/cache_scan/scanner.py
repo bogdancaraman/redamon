@@ -313,6 +313,11 @@ def _scan_one_url(url, wcvs_by_url, combined_result, settings, min_conf,
             )
             finding["cross_vantage"] = cross_vantage
             target_entry["findings"].append(finding)
+        if profile is not None:
+            # Read after the vectors ran: a control or reproduction that caught
+            # the page moving on its own also untrusts that dimension.
+            target_entry["baseline_stable"] = bool(profile["stable"])
+            target_entry["untrusted_dimensions"] = sorted({"status", "location", "body"} - profile["trusted"])
 
         _probe_deception(url, oracle_info, session, settings, timeout, verify_ssl,
                          cross_vantage, target_entry)

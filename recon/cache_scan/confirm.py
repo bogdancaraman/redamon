@@ -349,7 +349,9 @@ def confirm_vector(vector: dict, buster: dict, session: requests.Session,
         trusted: set = set()
         if differential_enabled:
             if baseline is None:
-                baseline = clean_profile(url, cb_param, session, timeout, verify_ssl, samples=2)
+                # The full profile, not two samples: a page alternating between two
+                # variants agrees with itself on two samples half the time.
+                baseline = clean_profile(url, cb_param, session, timeout, verify_ssl)
             if baseline is not None:
                 base_ref = baseline["ref"]
                 trusted = set(baseline["trusted"])
