@@ -120,5 +120,29 @@ class TestDomSinkFields(unittest.TestCase):
         _assert_flat(self, props)
 
 
+class TestDevReferenceNodes(unittest.TestCase):
+    def test_localhost_url_is_an_info_js_finding_not_a_secret(self):
+        client = _Client()
+        client.update_graph_from_js_recon({
+            "domain": "example.com",
+            "js_recon": {
+                "scan_metadata": {"scan_timestamp": "2026-10-08T00:00:00Z"},
+                "dev_references": [{
+                    "id": "r1", "type": "Localhost with Port", "value": "localhost:8080",
+                    "source_url": "https://app.example.com/main.js", "line_number": 12,
+                    "context": 'const api = "http://localhost:8080/api";',
+                }],
+            },
+        }, "u1", "p1")
+        queries = [q for q, _ in client.session_obj.calls]
+        self.assertFalse(any("MERGE (s:Secret" in q for q in queries))
+        [props] = [kw["props"] for q, kw in client.session_obj.calls
+                   if "MERGE (jf:JsReconFinding" in q and kw["props"].get("finding_type") == "dev_reference"]
+        self.assertEqual((props["title"], props["evidence"], props["severity"], props["line"]),
+                         ("Localhost with Port", "localhost:8080", "info", 12))
+        self.assertTrue(props["id"].startswith("jsrf-u1-p1-devref-"))
+        _assert_flat(self, props)
+
+
 if __name__ == "__main__":
     unittest.main()

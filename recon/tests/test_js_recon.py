@@ -119,7 +119,7 @@ class TestScanReturnFormat(unittest.TestCase):
     def test_filtered_is_dict(self):
         _, filtered = patterns.scan_js_content('x', 'test.js')
         self.assertIsInstance(filtered, dict)
-        expected_keys = {'low_entropy', 'base64_blob', 'binary_context', 'repetitive', 'url_whitelist'}
+        expected_keys = {'low_entropy', 'base64_blob', 'binary_context', 'repetitive', 'url_whitelist', 'generic_noise'}
         self.assertEqual(set(filtered.keys()), expected_keys)
 
     def test_finding_has_all_fields(self):
@@ -482,8 +482,15 @@ class TestFalsePositiveFilters(unittest.TestCase):
         self.assertTrue(any(f['name'] == 'Email Address' for f in findings))
 
     def test_staging_url_whitelist(self):
-        _, filtered = _scan_full('https://developer.mozilla.org/testing-internal-api')
+        # `dev` is a whole host label here, so the pattern matches and the
+        # documentation-domain whitelist is what drops it.
+        findings, filtered = _scan_full('https://dev.w3.org/csswg/testing-internal-api')
         self.assertGreaterEqual(filtered['url_whitelist'], 1)
+        self.assertFalse(any(f['name'] == 'Internal/Staging URL' for f in findings))
+
+    def test_documentation_host_containing_a_keyword_is_not_a_staging_url(self):
+        findings = _scan('https://developer.mozilla.org/testing-internal-api')
+        self.assertFalse(any(f['name'] == 'Internal/Staging URL' for f in findings))
 
     def test_staging_url_real_kept(self):
         findings = _scan('https://staging.internal-app.com')

@@ -139,6 +139,11 @@ _SKIP_PATTERNS = [
     re.compile(r'jsdelivr\.net'),
 ]
 
+# Developer leftovers the secret patterns match: a localhost or internal/staging
+# URL and a debug flag are reconnaissance leads, not credentials, so they are
+# written as JsReconFinding dev_reference nodes instead of Secret nodes.
+_DEV_REFERENCE_PATTERNS = frozenset({'Internal/Staging URL', 'Localhost with Port', 'Debug Flag'})
+
 # Max file size for download (5MB)
 _MAX_JS_FILE_SIZE = 5 * 1024 * 1024
 
@@ -594,6 +599,7 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
         'emails': [],
         'ip_addresses': [],
         'object_references': [],
+        'dev_references': [],
         'ai_sdk_findings': [],
     }
 
@@ -744,6 +750,15 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
                                 'source_url': finding.get('source_url', ''),
                                 'context': finding.get('context', ''),
                                 'potential_idor': True,
+                            })
+                        elif fname in _DEV_REFERENCE_PATTERNS:
+                            results['dev_references'].append({
+                                'id': finding.get('id', ''),
+                                'type': fname,
+                                'value': finding.get('matched_text', ''),
+                                'source_url': finding.get('source_url', ''),
+                                'line_number': finding.get('line_number'),
+                                'context': finding.get('context', ''),
                             })
                         elif cat == 'infrastructure':
                             if 'S3' in fname or 'GCP' in fname or 'Azure' in fname:
@@ -1088,6 +1103,7 @@ def _build_summary(results: dict) -> dict:
         'cloud_assets_found': len(results.get('cloud_assets', [])),
         'emails_found': len(results.get('emails', [])),
         'internal_ips_found': len(results.get('ip_addresses', [])),
+        'dev_references_found': len(results.get('dev_references', [])),
         'new_subdomains_discovered': len(results.get('discovered_subdomains', [])),
         'external_domains_found': len(results.get('external_domains', [])),
         'object_references_found': len(results.get('object_references', [])),
@@ -1247,11 +1263,15 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
 
         # Collect URLs from all sources for subdomain extraction
         all_urls_for_subdomain_check = list(results.get('endpoints', []))
-        # Add secrets that contain URLs
+        # Add secrets and developer references that contain URLs
         for secret in results.get('secrets', []):
             matched = secret.get('matched_text', '')
             if matched.startswith(('http://', 'https://')):
                 all_urls_for_subdomain_check.append({'full_url': matched})
+        for ref in results.get('dev_references', []):
+            value = ref.get('value', '')
+            if value.startswith(('http://', 'https://')):
+                all_urls_for_subdomain_check.append({'full_url': value})
         # Add source map URLs
         for sm in results.get('source_maps', []):
             if sm.get('map_url'):

@@ -45,6 +45,7 @@ interface JsReconData {
   cloud_assets?: any[]
   emails?: any[]
   ip_addresses?: any[]
+  dev_references?: any[]
   object_references?: any[]
   discovered_subdomains?: string[]
   external_domains?: any[]
@@ -151,6 +152,7 @@ function buildJsReconSheets(data: JsReconData): JsReconSheet[] {
     { name: 'Cloud Assets', rows: data.cloud_assets || [], columns: [N, 'provider', 'type', 'url', 'source_url', 'updatedAt'] },
     { name: 'Emails', rows: data.emails || [], columns: [N, 'email', 'category', 'source_url', 'context', 'updatedAt'] },
     { name: 'IPs', rows: data.ip_addresses || [], columns: [N, 'ip', 'type', 'source_url', 'context', 'updatedAt'] },
+    { name: 'Dev References', rows: data.dev_references || [], columns: [N, 'type', 'value', 'source_url', 'line', 'context', 'updatedAt'] },
     { name: 'Object Refs', rows: data.object_references || [], columns: [N, 'type', 'value', 'source_url', 'context', 'potential_idor', 'updatedAt'] },
     { name: 'Subdomains', rows: (data.discovered_subdomains || []).map(s => ({ subdomain: s })), columns: ['subdomain'] },
     { name: 'External Domains', rows: data.external_domains || [], columns: [N, 'domain', 'times_seen', 'updatedAt'] },
@@ -330,7 +332,7 @@ export const JsReconTable = memo(function JsReconTable({
       dependencies: data.dependencies?.length || 0,
       sourcemaps: data.source_maps?.length || 0,
       security: (data.dom_sinks?.length || 0) + (data.frameworks?.length || 0) + (data.dev_comments?.length || 0),
-      surface: (data.discovered_subdomains?.length || 0) + (data.cloud_assets?.length || 0) + (data.emails?.length || 0) + (data.ip_addresses?.length || 0) + (data.external_domains?.length || 0),
+      surface: (data.discovered_subdomains?.length || 0) + (data.cloud_assets?.length || 0) + (data.emails?.length || 0) + (data.ip_addresses?.length || 0) + (data.dev_references?.length || 0) + (data.external_domains?.length || 0),
     }
   }, [data])
 
@@ -661,9 +663,10 @@ function SurfaceTable({ data, search, limit, sortDir, onToggleSort }: { data: Js
   const cloud = sortByUpdatedAt(filterRows(data.cloud_assets || [], search), sortDir)
   const emails = sortByUpdatedAt(filterRows(data.emails || [], search), sortDir)
   const ips = sortByUpdatedAt(filterRows(data.ip_addresses || [], search), sortDir)
+  const devRefs = sortByUpdatedAt(filterRows(data.dev_references || [], search), sortDir)
   const extDomains = sortByUpdatedAt(filterRows(data.external_domains || [], search), sortDir)
 
-  if (!subs.length && !cloud.length && !emails.length && !ips.length && !extDomains.length)
+  if (!subs.length && !cloud.length && !emails.length && !ips.length && !devRefs.length && !extDomains.length)
     return <div className={styles.stateContainer}>No attack surface data found.</div>
 
   // Calculate per-section limits upfront
@@ -672,6 +675,7 @@ function SurfaceTable({ data, search, limit, sortDir, onToggleSort }: { data: Js
   const cloudLimit = Math.min(cloud.length, budget); budget -= cloudLimit
   const emailsLimit = Math.min(emails.length, budget); budget -= emailsLimit
   const ipsLimit = Math.min(ips.length, budget); budget -= ipsLimit
+  const devRefsLimit = Math.min(devRefs.length, budget); budget -= devRefsLimit
   const extLimit = Math.min(extDomains.length, budget)
 
   return (
@@ -716,6 +720,17 @@ function SurfaceTable({ data, search, limit, sortDir, onToggleSort }: { data: Js
             <thead><tr><NodeIdTh /><th>IP</th><th>Type</th><th>Source</th><UpdatedAtTh dir={sortDir} onToggle={onToggleSort} /><th /></tr></thead>
             <tbody>{ips.slice(0, ipsLimit).map((ip, i) => (
               <tr key={i}><td><NodeIdCell value={ip.nodeId} /></td><td><code className={styles.mono}>{ip.ip}</code></td><td>{ip.type}</td><td className={styles.truncate} title={ip.source_url}><ExternalLink href={ip.source_url}>{ip.source_url}</ExternalLink></td><td><UpdatedAtCell value={ip.updatedAt} /></td><td><MuteNodeButton name={ip.ip} graphId={ip.nodeId} label="JsReconFinding" /></td></tr>
+            ))}</tbody>
+          </table>
+        </>
+      )}
+      {devRefs.length > 0 && devRefsLimit > 0 && (
+        <>
+          <div className={styles.sectionTitle}>Developer References ({devRefs.length})</div>
+          <table className={styles.table}>
+            <thead><tr><NodeIdTh /><th>Type</th><th>Value</th><th>Source</th><UpdatedAtTh dir={sortDir} onToggle={onToggleSort} /><th /></tr></thead>
+            <tbody>{devRefs.slice(0, devRefsLimit).map((r, i) => (
+              <tr key={i}><td><NodeIdCell value={r.nodeId} /></td><td>{r.type}</td><td className={styles.truncate} title={r.context || r.value}><code className={styles.mono}>{r.value}</code></td><td className={styles.truncate} title={r.source_url}><ExternalLink href={r.source_url}>{r.source_url}</ExternalLink></td><td><UpdatedAtCell value={r.updatedAt} /></td><td><MuteNodeButton name={r.value} graphId={r.nodeId} label="JsReconFinding" /></td></tr>
             ))}</tbody>
           </table>
         </>

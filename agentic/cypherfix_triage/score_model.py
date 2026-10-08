@@ -450,6 +450,7 @@ JS_RECON_CLASSES = {
     "source_map_exposure": FindingClass("info_disclosure", 0.2, 0.2, caps_impact=True),
     "source_map_reference": FindingClass("info_disclosure", 0.1, 0.05, caps_impact=True),
     "dev_comment": FindingClass("info_disclosure", 0.2, 0.1, caps_impact=True),
+    "dev_reference": FindingClass("info_disclosure", 0.1, 0.05, caps_impact=True),
     # A lexical sink is a lead for a DOM XSS, not a confirmed one, and older
     # scans stamped every Function()/eval() match critical, so the class caps
     # it. A sink fed by a nearby URL/message source is written high and lands

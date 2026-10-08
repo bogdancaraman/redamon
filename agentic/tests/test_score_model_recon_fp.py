@@ -44,8 +44,8 @@ class TestJsReconClasses(unittest.TestCase):
         secret = sm.score(js_finding("secret", "critical"), sm.ProjectFacts())
         self.assertLess(sink.risk, secret.risk)
 
-    def test_dev_comment_and_map_reference_are_info_disclosure(self):
-        for kind in ("dev_comment", "source_map_reference"):
+    def test_dev_comment_map_reference_and_dev_reference_are_info_disclosure(self):
+        for kind in ("dev_comment", "source_map_reference", "dev_reference"):
             with self.subTest(kind=kind):
                 self.assertEqual(sm._class_for(js_finding(kind, "medium")).name, "info_disclosure")
 

@@ -289,7 +289,9 @@ _RAW_PATTERNS = [
     ("GCP Storage", r"https?://storage\.googleapis\.com/([a-zA-Z0-9._-]+)", "medium", "high", "infrastructure", None),
     ("GCP gs:// URL", r"gs://([a-zA-Z0-9._-]+)", "medium", "high", "infrastructure", None),
     ("Azure Blob Storage", r"https?://([a-zA-Z0-9]+)\.blob\.core\.windows\.net", "medium", "high", "infrastructure", None),
-    ("Internal/Staging URL", r"https?://[a-zA-Z0-9.-]*(staging|internal|dev|test|local|admin)[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}", "low", "low", "infrastructure", None),
+    # The keyword must be a whole host-label word: `dev.`, `api-dev.`, `staging2.`
+    # match; `developer.`, `latest.`, `localhost` do not.
+    ("Internal/Staging URL", r"https?://[a-zA-Z0-9.-]*?(?<![a-zA-Z])(staging|internal|dev|test|local|admin)(?![a-zA-Z])[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}", "low", "low", "infrastructure", None),
     ("Localhost with Port", r"(?:localhost|127\.0\.0\.1):\d{2,5}", "low", "medium", "infrastructure", None),
 
     # ========== LOW / INFO ==========
@@ -438,6 +440,54 @@ def _is_whitelisted_staging_url(matched_text: str) -> bool:
     return any(domain in lower for domain in _STAGING_URL_WHITELIST)
 
 
+# The keyword-anchored patterns match any `password: "..."` in a bundle, and a
+# bundle is mostly UI: labels ("Forgot your password?"), routes, i18n keys,
+# selectors and field names. These rules judge the captured VALUE, never the
+# line, so a real secret next to such text still reports.
+_GENERIC_VALUE_RE = {
+    'Generic Secret': re.compile(r'[:=]\s*["\']([^"\']*)["\']'),
+    'Hardcoded Password': re.compile(r'=\s*["\']([^"\']*)["\']'),
+    'Generic API Key': re.compile(r'[:=]\s*["\']?([a-zA-Z0-9_\-]{16,})'),
+    'Generic Token': re.compile(r'[:=]\s*["\']?([a-zA-Z0-9_\-]{16,})'),
+}
+_PLACEHOLDER_VALUE = re.compile(
+    r'^(?:x{3,}|\*{3,}|\.{3,}|changeme|change[_-]?me|example|sample|dummy|placeholder|test|testing'
+    r'|todo|tbd|none|null|undefined|true|false|password|passwd|secret|token|api[_-]?key'
+    r'|(?:your|enter)[_-]?\w*|my[_-]?(?:key|token|secret|password|api[_-]?key)'
+    r'|<[^>]*>|\$\{[^}]*\}|\{\{[^}]*\}\}|%\w+%|__\w+__)$',
+    re.IGNORECASE,
+)
+_I18N_KEY = re.compile(r'^[A-Za-z_]+(?:\.[A-Za-z_]+)+$')
+_FIELD_NAME_WORDS = ('password', 'passwd', 'pwd', 'secret', 'token', 'apikey', 'api_key', 'api-key')
+
+
+def _generic_value_is_noise(name: str, matched_text: str) -> bool:
+    """True when a generic keyword pattern captured UI text, a placeholder,
+    a route/selector/template, an i18n key, a field name or an identifier
+    rather than a credential."""
+    value_re = _GENERIC_VALUE_RE.get(name)
+    if value_re is None:
+        return False
+    m = value_re.search(matched_text)
+    value = (m.group(1) if m else '').strip()
+    if not value or any(c.isspace() for c in value):
+        return True
+    if _PLACEHOLDER_VALUE.match(value) or _I18N_KEY.match(value):
+        return True
+    if value[0] in '/#.[<$({' or '://' in value:
+        return True
+    if re.fullmatch(r'[A-Za-z_-]+', value) and any(w in value.lower() for w in _FIELD_NAME_WORDS):
+        return True
+    if name in ('Generic API Key', 'Generic Token'):
+        # A key or token is random: an identifier like `getApiKeyFromStorage`
+        # has no digit, and a real one does not read as low-entropy text.
+        if not re.search(r'\d', value) or not re.search(r'[A-Za-z]', value):
+            return True
+        if _shannon_entropy(value) < 3.0:
+            return True
+    return False
+
+
 def _collapse_span_duplicates(findings: list) -> list:
     """Collapse findings that matched the same span under different pattern names.
 
@@ -540,6 +590,7 @@ def scan_js_content(
         'binary_context': 0,
         'repetitive': 0,
         'url_whitelist': 0,
+        'generic_noise': 0,
     }
 
     # Categories where false-positive filters apply
@@ -594,6 +645,10 @@ def scan_js_content(
                 # Skip whitelisted staging URLs
                 if pattern['name'] == 'Internal/Staging URL' and _is_whitelisted_staging_url(matched_text):
                     filtered_counts['url_whitelist'] += 1
+                    continue
+
+                if _generic_value_is_noise(pattern['name'], matched_text):
+                    filtered_counts['generic_noise'] += 1
                     continue
 
                 # --- False-positive filters for embedded binary/font data ---

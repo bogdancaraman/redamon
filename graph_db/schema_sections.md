@@ -857,6 +857,23 @@ Additional properties present on this node type, not yet described:
 - sample_urls (list[string])
 Package properties on dependency and framework findings:
 - package_name (string), package_version (string): the package the finding names
+Source-map properties (finding_type source_map_exposure or source_map_reference):
+- map_url (string): the source map URL the script references or the probe found
+- accessible (boolean): the map was served and parsed as a v3 source map
+- fetch_result (string): ok for a served map; http_401 or http_403 for a referenced map that refused access
+- discovery_method (string): comment, header or probe
+- files_count (integer): sources listed in the map
+- first_party_files (integer): sources outside node_modules and the bundler runtime
+- has_sources_content (boolean): the map embeds the target's own source text
+- source_files (list[string]): the first-party source paths, capped at 100
+- secrets_in_source (integer): secret-pattern hits in the embedded first-party source text
+- third_party (boolean): the script is served from a host outside the target
+DOM-sink and developer-reference properties (finding_type dom_sink or dev_reference; a dev_reference is a localhost or internal/staging URL or a debug flag in shipped JS, a recon lead rather than a credential):
+- line (integer): line of the JS file where the sink or reference matched
+- column (integer): column of a dom_sink match on that line
+- user_source (string): the user-controlled source found near the sink (location.hash, e.data, ...), absent when none
+- vendor (boolean): the file is library/runtime/plugin code or served from a third-party host
+- nominal_severity (string): the sink's severity before the source and vendor checks lowered it
 
 1. **JS File nodes** (finding_type='js_file') - Represent each analyzed JavaScript file. All findings from that file are linked to this node.
    - finding_type: 'js_file'
@@ -866,7 +883,7 @@ Package properties on dependency and framework findings:
    - source_url (string): full URL or upload://filename
 
 2. **Finding nodes** (finding_type != 'js_file') - Individual findings linked to their parent JS file node.
-   - finding_type (string): dependency_confusion, source_map_exposure, dom_sink, framework, dev_comment, source_map_reference
+   - finding_type (string): dependency_confusion, source_map_exposure, dom_sink, framework, dev_comment, source_map_reference, dev_reference
    - severity (string): critical, high, medium, low, info
    - confidence (string): high, medium, low
    - title (string): human-readable finding title
@@ -874,18 +891,6 @@ Package properties on dependency and framework findings:
    - evidence (string): matched pattern or code snippet
    - source_url (string): JS file where finding was discovered
    - source (string): always "js_recon"
-   Source-map findings (source_map_exposure, source_map_reference) also carry:
-   - map_url (string), accessible (boolean), discovery_method (string): comment, header or probe
-   - fetch_result (string): ok for a served map; http_401 / http_403 for a referenced map that refused access
-   - files_count (integer), first_party_files (integer): sources in the map, and those outside node_modules and the bundler runtime
-   - has_sources_content (boolean): the map embeds the target's own source text
-   - source_files (list[string]), secrets_in_source (integer)
-   - third_party (boolean): the script is served from a host outside the target
-   DOM-sink findings (dom_sink) also carry:
-   - line (integer), column (integer): where the sink matched in the JS file
-   - user_source (string): the user-controlled source found near the sink (location.hash, e.data, ...), absent when none
-   - vendor (boolean): the file is library/runtime/plugin code or served from a third-party host
-   - nominal_severity (string): the sink's severity before the source and vendor checks lowered it
 
 Graph hierarchy: Domain/BaseURL -> JS file node -> findings/secrets/endpoints
 - `(Domain)-[:HAS_JS_FILE]->(JsReconFinding {finding_type: 'js_file'})` for uploaded files

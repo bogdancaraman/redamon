@@ -170,7 +170,8 @@ class JsReconMixin:
             # --- 0. Collect all unique source JS files and create file nodes ---
             all_source_urls = set()
             for data_key in ("dependencies", "source_maps", "dom_sinks", "dev_comments",
-                             "emails", "ip_addresses", "object_references", "cloud_assets"):
+                             "emails", "ip_addresses", "object_references", "cloud_assets",
+                             "dev_references"):
                 for f in js_recon_data.get(data_key, []):
                     url = f.get("source_url", f.get("js_url", ""))
                     if url:
@@ -488,6 +489,43 @@ class JsReconMixin:
                         stats["relationships_created"] += 1
                 except Exception as e:
                     stats["errors"].append(f"Internal IP finding failed: {e}")
+
+            # Developer references: localhost / internal-staging URLs and debug
+            # flags. Recon leads, not credentials, so not Secret nodes.
+            for ref in js_recon_data.get("dev_references", []):
+                try:
+                    value = (ref.get("value") or "").strip()
+                    if not value:
+                        continue
+                    source_url = ref.get("source_url", "")
+                    id_hash = hashlib.sha256(f"{ref.get('type')}:{value}:{source_url}".encode()).hexdigest()[:16]
+                    node_id = f"jsrf-{user_id}-{project_id}-devref-{id_hash}"
+                    props = {
+                        "id": node_id,
+                        "user_id": user_id,
+                        "project_id": project_id,
+                        "finding_type": "dev_reference",
+                        "severity": "info",
+                        "confidence": "medium",
+                        "title": ref.get("type") or "dev_reference",
+                        "detail": (ref.get("context") or "")[:500],
+                        "evidence": value[:500],
+                        "line": ref.get("line_number"),
+                        "source_url": source_url,
+                        "base_url": _derive_base_url(source_url) or 'upload',
+                        "source": "js_recon",
+                        "discovered_at": scan_ts,
+                    }
+                    session.run(
+                        "MERGE (jf:JsReconFinding {id: $id, user_id: $props.user_id, project_id: $props.project_id}) SET jf += $props, jf.updated_at = datetime()",
+                        id=node_id, props=props
+                    )
+                    stats["findings_created"] += 1
+
+                    if _link_to_file(session, node_id, 'JsReconFinding', 'HAS_JS_FINDING', source_url):
+                        stats["relationships_created"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"Developer reference finding failed: {e}")
 
             # Object reference (UUID / IDOR) findings
             created_refs = set()

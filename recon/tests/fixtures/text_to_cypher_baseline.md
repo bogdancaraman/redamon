@@ -1023,12 +1023,31 @@ Additional properties present on this node type, not yet described:
 Package properties on dependency and framework findings:
 - package_name (string): the package the finding names
 - package_version (string): the package the finding names
+
+Source-map properties (finding_type source_map_exposure or source_map_reference):
+- map_url (string): the source map URL the script references or the probe found
+- accessible (boolean): the map was served and parsed as a v3 source map
+- fetch_result (string): ok for a served map; http_401 or http_403 for a referenced map that refused access
+- discovery_method (string): comment, header or probe
+- files_count (integer): sources listed in the map
+- first_party_files (integer): sources outside node_modules and the bundler runtime
+- has_sources_content (boolean): the map embeds the target's own source text
+- source_files (list[string]): the first-party source paths, capped at 100
+- secrets_in_source (integer): secret-pattern hits in the embedded first-party source text
+- third_party (boolean): the script is served from a host outside the target
+
+DOM-sink and developer-reference properties (finding_type dom_sink or dev_reference; a dev_reference is a localhost or internal/staging URL or a debug flag in shipped JS, a recon lead rather than a credential):
+- line (integer): line of the JS file where the sink or reference matched
+- column (integer): column of a dom_sink match on that line
+- user_source (string): the user-controlled source found near the sink (location.hash, e.data, ...), absent when none
+- vendor (boolean): the file is library/runtime/plugin code or served from a third-party host
+- nominal_severity (string): the sink's severity before the source and vendor checks lowered it
 - finding_type: 'js_file'
 - title (string): filename (e.g. "app.js", "test_app.js")
 - detail (string): full URL or upload:// path
 - is_uploaded (boolean): true if manually uploaded, false if from pipeline crawl
 - source_url (string): full URL or upload://filename
-- finding_type (string): dependency_confusion, source_map_exposure, dom_sink, framework, dev_comment, source_map_reference
+- finding_type (string): dependency_confusion, source_map_exposure, dom_sink, framework, dev_comment, source_map_reference, dev_reference
 - severity (string): critical, high, medium, low, info
 - confidence (string): high, medium, low
 - title (string): human-readable finding title

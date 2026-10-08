@@ -35,6 +35,7 @@ interface JsReconResponse {
   dev_comments: any[]
   emails: any[]
   ip_addresses: any[]
+  dev_references: any[]
   object_references: any[]
   cloud_assets: any[]
   external_domains: any[]
@@ -47,14 +48,14 @@ interface JsReconResponse {
 }
 
 function generateEtag(data: JsReconResponse): string {
-  const raw = `${data.secrets.length}:${data.endpoints.length}:${data.dependencies.length}:${data.dom_sinks.length}:${data.frameworks.length}:${data.source_maps.length}:${data.dev_comments.length}:${data.emails.length}:${data.ip_addresses.length}:${data.object_references.length}:${data.cloud_assets.length}:${data.external_domains.length}`
+  const raw = `${data.secrets.length}:${data.endpoints.length}:${data.dependencies.length}:${data.dom_sinks.length}:${data.frameworks.length}:${data.source_maps.length}:${data.dev_comments.length}:${data.emails.length}:${data.ip_addresses.length}:${data.dev_references.length}:${data.object_references.length}:${data.cloud_assets.length}:${data.external_domains.length}`
   const hash = createHash('md5').update(raw)
   // A rescan recreates the nodes, usually with the same counts but new ids. A
   // count-only tag would 304 and leave the Node ID column pointing at deleted
   // nodes, so the ids are part of the tag.
   for (const list of [
     data.secrets, data.endpoints, data.dependencies, data.dom_sinks, data.frameworks,
-    data.source_maps, data.dev_comments, data.emails, data.ip_addresses,
+    data.source_maps, data.dev_comments, data.emails, data.ip_addresses, data.dev_references,
     data.object_references, data.cloud_assets, data.external_domains,
   ]) {
     for (const row of list) hash.update(`${row.nodeId ?? ''},`)
@@ -181,6 +182,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const dev_comments: any[] = []
     const emails: any[] = []
     const ip_addresses: any[] = []
+    const dev_references: any[] = []
     const object_references: any[] = []
     const cloud_assets: any[] = []
     const external_domains: any[] = []
@@ -259,6 +261,17 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             email: base.title,
             category: 'unknown',
             source_url: base.source_url,
+            context: base.detail,
+            updatedAt: base.updatedAt,
+          })
+          break
+        case 'dev_reference':
+          dev_references.push({
+            nodeId: base.nodeId,
+            type: base.title,
+            value: base.evidence,
+            source_url: base.source_url,
+            line: toNum(record.get('line')),
             context: base.detail,
             updatedAt: base.updatedAt,
           })
@@ -352,6 +365,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       endpoints.length > 0 ||
       emails.length > 0 ||
       ip_addresses.length > 0 ||
+      dev_references.length > 0 ||
       object_references.length > 0 ||
       cloud_assets.length > 0 ||
       external_domains.length > 0
@@ -375,6 +389,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       dev_comments,
       emails,
       ip_addresses,
+      dev_references,
       object_references,
       cloud_assets,
       external_domains,
@@ -382,7 +397,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         total_secrets: secrets.length,
         total_endpoints: endpoints.length,
         total_findings: dependencies.length + source_maps.length + dom_sinks.length + frameworks.length
-          + dev_comments.length + emails.length + ip_addresses.length + object_references.length
+          + dev_comments.length + emails.length + ip_addresses.length + dev_references.length + object_references.length
           + cloud_assets.length + external_domains.length,
         ...(liveCount > 0 ? { validated_keys: { live: liveCount } } : {}),
       },
