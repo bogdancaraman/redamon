@@ -433,8 +433,12 @@ kinds:
         all:
           - { field: cve_year, op: lt, value: 2015 }
           - { field: has_exploit, op: is_false }
-      - name: Shodan CVEs with no service or version seen
+      - name: Shodan CVEs with no service version seen
         all: [{ field: detection_method, op: in, value: [passive_catalog] }]
+      - name: Shodan CVEs recorded before evidence grading
+        all:
+          - { field: source, op: in, value: [shodan_api, internetdb, shodan_host_lookup, shodan] }
+          - { field: detection_method, op: missing }
     notes:
       - >-
         CriminalIP writes these nodes once and never refreshes them, and none of

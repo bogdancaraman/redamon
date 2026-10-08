@@ -482,8 +482,8 @@ def _service_vulns(raw) -> list[dict]:
 # now runs Linode), G-Core and StackPath also rent VMs, so their edges are
 # recognised by Shodan's `cdn` tag instead of the org name.
 _SHARED_EDGE_ORG = re.compile(
-    r"cloudflare|fastly|vercel|netlify|incapsula|imperva|sucuri"
-    r"|edgecast|edgio|limelight|bunny|cdn77|cloudfront",
+    r"\b(?:cloudflare|fastly|vercel|netlify|incapsula|imperva|sucuri"
+    r"|edgecast|edgio|limelight|bunnyway|bunny\.net|cdn77|cloudfront)\b",
     re.IGNORECASE,
 )
 
@@ -496,6 +496,9 @@ def _is_shared_edge_host(host: dict) -> bool:
         return True
     org = " ".join(str(host.get(k) or "") for k in ("org", "isp"))
     return bool(_SHARED_EDGE_ORG.search(org))
+
+
+_GRADE_RANK = {"passive_catalog": 0, "passive_version_match": 1, "passive_verified": 2}
 
 
 def _passive_cve_entry(cve_id: str, ip: str, source: str, svc: Optional[dict] = None,
@@ -551,17 +554,21 @@ def _extract_passive_cves(hosts: list[dict], ips: list[str], api_key: str, key_r
                 skipped_edge += 1
                 continue
             source = host.get("source", "shodan_host_lookup")
+            # One entry per CVE per IP: the best-evidenced banner wins (a
+            # verified one over a version match over a bare listing).
+            best: dict[str, dict] = {}
             for svc in host.get("services", []):
                 for v in svc.get("vulns") or []:
-                    key = (v["cve_id"], ip)
-                    if key not in seen_cve_ip:
-                        seen_cve_ip.add(key)
-                        cves.append(_passive_cve_entry(v["cve_id"], ip, source, svc, v.get("cvss"), v.get("verified", False)))
+                    entry = _passive_cve_entry(v["cve_id"], ip, source, svc, v.get("cvss"), v.get("verified", False))
+                    held = best.get(v["cve_id"])
+                    if held is None or _GRADE_RANK[entry["detection_method"]] > _GRADE_RANK[held["detection_method"]]:
+                        best[v["cve_id"]] = entry
             for cve_id in host.get("vulns", []):
-                key = (cve_id, ip)
-                if key not in seen_cve_ip:
-                    seen_cve_ip.add(key)
-                    cves.append(_passive_cve_entry(cve_id, ip, source))
+                best.setdefault(cve_id, _passive_cve_entry(cve_id, ip, source))
+            for cve_id, entry in best.items():
+                if (cve_id, ip) not in seen_cve_ip:
+                    seen_cve_ip.add((cve_id, ip))
+                    cves.append(entry)
     else:
         # No host data -- query InternetDB directly (free, no key needed)
         print("[*][Shodan] Querying InternetDB for passive CVEs (free)")

@@ -449,7 +449,9 @@ JS_RECON_CLASSES = {
     "email": FindingClass("info_disclosure", 0.2, 0.1, caps_impact=True),
     "source_map_exposure": FindingClass("info_disclosure", 0.2, 0.2, caps_impact=True),
     "source_map_reference": FindingClass("info_disclosure", 0.1, 0.05, caps_impact=True),
-    "dev_comment": FindingClass("info_disclosure", 0.2, 0.1, caps_impact=True),
+    # Not capped: the scanner rates a comment naming a password or key medium
+    # and the rest low, a per-finding judgement worth keeping.
+    "dev_comment": FindingClass("info_disclosure", 0.2, 0.1),
     "dev_reference": FindingClass("info_disclosure", 0.1, 0.05, caps_impact=True),
     # A lexical sink is a lead for a DOM XSS, not a confirmed one, and older
     # scans stamped every Function()/eval() match critical, so the class caps
@@ -1003,7 +1005,9 @@ def _rule_confidence(finding: dict, facts: ProjectFacts) -> Factor:
     if source in ("shodan", "shodan_api", "internetdb"):
         method = _lower(finding.get("detection_method"))
         if method == "passive_verified":
-            return Factor(0.75, "Shodan verified this CVE on the service")
+            # Credible, but Shodan's check is not ours and may be stale: below
+            # the 0.75 that T1/T2 need, so it ranks first in T3 until proven.
+            return Factor(0.6, "Shodan verified this CVE on the service")
         if method == "passive_version_match":
             return Factor(0.4, "a CVE matched to a service banner's product and version")
         # Rows written before the grading carry no method, and every one of

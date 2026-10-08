@@ -1736,7 +1736,7 @@
           ]
         },
         {
-          "name": "Shodan CVEs with no service or version seen",
+          "name": "Shodan CVEs with no service version seen",
           "all": [
             {
               "field": "detection_method",
@@ -1744,6 +1744,25 @@
               "value": [
                 "passive_catalog"
               ]
+            }
+          ]
+        },
+        {
+          "name": "Shodan CVEs recorded before evidence grading",
+          "all": [
+            {
+              "field": "source",
+              "op": "in",
+              "value": [
+                "shodan_api",
+                "internetdb",
+                "shodan_host_lookup",
+                "shodan"
+              ]
+            },
+            {
+              "field": "detection_method",
+              "op": "missing"
             }
           ]
         }

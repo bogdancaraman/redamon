@@ -506,12 +506,12 @@ Netlas-specific properties (source="netlas"):
 - has_exploit (boolean): whether a known public exploit exists (from NVD data)
 
 Shodan passive CVE properties (source="shodan_api" or "internetdb"):
-- detection_method (string): "passive_verified" (Shodan verified the CVE on the banner), "passive_version_match" (a banner's product and version matched), or "passive_catalog" (the IP's CVE list alone, with no service or version observed)
+- detection_method (string): "passive_verified" (Shodan verified the CVE on the banner), "passive_version_match" (a banner's product and version matched), or "passive_catalog" (no banner version: the IP's CVE list alone, or a banner naming no version); absent on rows written before the grading. It only rises across runs
 - verified (boolean): Shodan's own verification flag for a banner CVE
 - target_ip (string): the IP Shodan reported the CVE on
-- target_port (integer): the banner's port, absent for a catalog match
-- product (string): the banner's product, absent for a catalog match
-- version (string): the banner's version, absent for a catalog match
+- target_port (integer): the banner's port, absent when no banner named the CVE
+- product (string): the banner's product, absent when the banner named none
+- version (string): the banner's version, absent when the banner named none
 
 Nuclei-specific properties (source="nuclei"):
 - template_id (string): nuclei template ID
@@ -655,7 +655,7 @@ Per-source properties node filters also read (graph_db/node_filters/catalog.yaml
 - package_version
 - remediated_at
 - id pattern: `shodan-{cve}-{ip}`; a shared CDN/edge IP (Shodan's `cdn` tag or an edge provider's attribution) yields no CVE rows
-- Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)` always, and `(svc:Service)-[:HAS_VULNERABILITY]->(v)` when the banner named a product
+- Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)`, the finding's only parent (match the Service by `target_port` and `product`)
 - Typical query: "list serialized-object candidates awaiting confirmation, most reachable first" → `MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v:Vulnerability {source:'serialized_scan'}) WHERE v.needs_agent_confirmation = true AND NOT (:ChainFinding)-[:CONFIRMS]->(v) RETURN e.url, v.id, v.deser_format, v.deser_location, v.deser_jev_exploitability ORDER BY CASE v.deser_jev_format WHEN 'none' THEN -1 ELSE coalesce(v.deser_jev_exploitability, -1) END DESC, v.id`
 - id pattern: `graphql_{vulnerability_type}_{baseurl}_{path}` (deterministic, MERGE-safe across re-scans)
 - Typical query: "find endpoints exposing GraphQL introspection" → `MATCH (e:Endpoint {is_graphql: true, graphql_introspection_enabled: true})-[:HAS_VULNERABILITY]->(v:Vulnerability) WHERE v.source IN ['graphql_scan', 'graphql_cop'] RETURN e.url, v.vulnerability_type, v.severity`

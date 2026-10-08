@@ -89,8 +89,16 @@ class TestShodanPassiveCves(unittest.TestCase):
     def test_banner_version_match_is_a_passive_guess(self):
         self.assertEqual(self.c_of(shodan_cve(detection_method="passive_version_match")), 0.4)
 
-    def test_shodan_verified_is_credible(self):
-        self.assertEqual(self.c_of(shodan_cve(detection_method="passive_verified")), 0.75)
+    def test_shodan_verified_is_credible_but_never_act_now_unproven(self):
+        self.assertEqual(self.c_of(shodan_cve(detection_method="passive_verified")), 0.6)
+        row = shodan_cve(detection_method="passive_verified", severity="critical", cvss_score=9.8, cisa_kev=True)
+        result = sm.score(row, sm.ProjectFacts(live_hosts={"h1"}))
+        self.assertEqual(result.tier, "T3")
+
+    def test_a_sensitive_dev_comment_keeps_its_severity(self):
+        medium = sm.score(js_finding("dev_comment", "medium"), sm.ProjectFacts())
+        low = sm.score(js_finding("dev_comment", "low"), sm.ProjectFacts())
+        self.assertGreater(medium.impact.value, low.impact.value)
 
     def test_catalog_match_leaves_the_plan_tier(self):
         facts = sm.ProjectFacts(live_hosts={"h1"})

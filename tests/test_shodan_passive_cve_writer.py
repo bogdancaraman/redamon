@@ -3,8 +3,9 @@
 Rows were written ON CREATE only, with nothing but the CVE id: no severity,
 no port, no product, no version and no way to tell a banner match from an
 IP-catalog correlation, and a rescan never refreshed them. Each row now
-carries its evidence grade, a CVSS-derived severity when Shodan gave a score,
-and hangs off its Service when the banner named one.
+carries its evidence grade and a CVSS-derived severity when Shodan gave a
+score. A later, worse-informed run (InternetDB fallback) never erases that
+evidence, and the IP stays the finding's only parent.
 """
 
 import os
@@ -76,12 +77,12 @@ class TestProps(unittest.TestCase):
         self.assertEqual((p["cvss_score"], p["severity"], p["verified"]), (7.7, "high", False))
         self.assertEqual((p["name"], p["cves"]), ("CVE-2021-23017", ["CVE-2021-23017"]))
 
-    def test_catalog_match_has_no_invented_severity(self):
+    def test_catalog_match_writes_nothing_it_does_not_know(self):
         p = _shodan_cve_props(CATALOG)
         self.assertEqual(p["detection_method"], "passive_catalog")
-        self.assertIsNone(p["severity"])
-        self.assertIsNone(p["target_port"])
-        self.assertIsNone(p["product"])
+        for key in ("severity", "cvss_score", "target_port", "product", "version"):
+            self.assertNotIn(key, p)
+        self.assertNotIn(None, p.values())
 
     def test_entry_from_an_older_payload_is_a_catalog_match(self):
         self.assertEqual(_shodan_cve_props({"cve_id": "CVE-1", "ip": "203.0.113.1"})["detection_method"],
@@ -101,19 +102,22 @@ class TestWrite(unittest.TestCase):
         self.assertIn("ON CREATE SET v.source = $source", q)
         self.assertIn("user_id: $user_id", q)
         self.assertIn("project_id: $project_id", q)
-        self.assertEqual(params["props"]["detection_method"], "passive_version_match")
+        self.assertEqual(params["method"], "passive_version_match")
+        self.assertEqual(params["props"]["product"], "nginx")
         self.assertEqual(params["vuln_id"], "shodan-CVE-2021-23017-203.0.113.9")
 
-    def test_banner_cve_hangs_off_its_service(self):
-        calls = _write([BANNER])
-        links = [p for q, p in calls if "MATCH (svc:Service" in q and "HAS_VULNERABILITY" in q]
-        self.assertEqual(len(links), 1)
-        self.assertEqual((links[0]["product"], links[0]["port"], links[0]["ip"]), ("nginx", 443, "203.0.113.9"))
-
-    def test_catalog_cve_has_no_service_link(self):
+    def test_the_grade_only_rises_and_verified_only_turns_on(self):
         calls = _write([CATALOG])
-        self.assertFalse(any("MATCH (svc:Service" in q for q, _ in calls))
-        self.assertTrue(any("MERGE (i)-[:HAS_VULNERABILITY]->(v)" in q for q, _ in calls))
+        [q] = [q for q, _ in calls if "MERGE (v:Vulnerability" in q]
+        self.assertIn("rank[v.detection_method]", q)
+        self.assertIn("coalesce(v.verified, false) OR $verified", q)
+
+    def test_the_ip_is_the_only_parent(self):
+        # A Service parent would make the board read its product as the host.
+        for entry in (BANNER, CATALOG):
+            calls = _write([entry])
+            self.assertFalse(any("Service" in q and "HAS_VULNERABILITY" in q for q, _ in calls))
+            self.assertTrue(any("MERGE (i)-[:HAS_VULNERABILITY]->(v)" in q for q, _ in calls))
 
 
 if __name__ == "__main__":

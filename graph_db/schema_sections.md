@@ -388,14 +388,14 @@ Netlas-specific properties (source="netlas"):
 - Relationship: `(svc:Service)-[:HAS_VULNERABILITY]->(v:Vulnerability)` — linked to the Service where the vulnerable software was detected
 
 Shodan passive CVE properties (source="shodan_api" or "internetdb"):
-- detection_method (string): "passive_verified" (Shodan verified the CVE on the banner), "passive_version_match" (a banner's product and version matched), or "passive_catalog" (the IP's CVE list alone, with no service or version observed)
+- detection_method (string): "passive_verified" (Shodan verified the CVE on the banner), "passive_version_match" (a banner's product and version matched), or "passive_catalog" (no banner version: the IP's CVE list alone, or a banner naming no version); absent on rows written before the grading. It only rises across runs
 - verified (boolean): Shodan's own verification flag for a banner CVE
 - target_ip (string): the IP Shodan reported the CVE on
-- target_port (integer): the banner's port, absent for a catalog match
-- product (string): the banner's product, absent for a catalog match
-- version (string): the banner's version, absent for a catalog match
+- target_port (integer): the banner's port, absent when no banner named the CVE
+- product (string): the banner's product, absent when the banner named none
+- version (string): the banner's version, absent when the banner named none
 - id pattern: `shodan-{cve}-{ip}`; a shared CDN/edge IP (Shodan's `cdn` tag or an edge provider's attribution) yields no CVE rows
-- Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)` always, and `(svc:Service)-[:HAS_VULNERABILITY]->(v)` when the banner named a product
+- Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)`, the finding's only parent (match the Service by `target_port` and `product`)
 
 Nuclei-specific properties (source="nuclei"):
 - template_id (string): nuclei template ID

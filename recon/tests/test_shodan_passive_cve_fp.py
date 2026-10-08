@@ -98,6 +98,15 @@ class TestGrading(unittest.TestCase):
     def test_each_cve_once_per_ip(self):
         self.assertEqual(len(self._cves()), 3)
 
+    def test_the_best_evidenced_banner_wins_for_a_cve(self):
+        hosts = [{"ip": "203.0.113.5", "vulns": ["CVE-Y"], "services": [
+            {"port": 8080, "product": "", "version": "", "vulns": [{"cve_id": "CVE-Y", "cvss": None, "verified": False}]},
+            {"port": 80, "product": "OpenSSH", "version": "7.4", "vulns": [{"cve_id": "CVE-Y", "cvss": 5.3, "verified": False}]},
+            {"port": 443, "product": "OpenSSH", "version": "7.4", "vulns": [{"cve_id": "CVE-Y", "cvss": 5.3, "verified": True}]},
+        ]}]
+        [c] = _extract_passive_cves(hosts, [], "k")
+        self.assertEqual((c["port"], c["detection_method"]), (443, "passive_verified"))
+
     def test_product_without_version_is_not_a_version_match(self):
         hosts = [{"ip": "203.0.113.5", "vulns": [], "services": [
             {"port": 22, "product": "OpenSSH", "version": "", "vulns": [{"cve_id": "CVE-X", "cvss": 5.0, "verified": False}]},
@@ -124,6 +133,11 @@ class TestSharedEdge(unittest.TestCase):
                      {"org": "Akamai Connected Cloud", "isp": "Akamai Technologies, Inc."},
                      {"org": "G-Core Labs S.A."}, {"org": "StackPath, LLC"}):
             self.assertFalse(_is_shared_edge_host(host), host)
+
+    def test_edge_names_match_as_whole_words(self):
+        self.assertFalse(_is_shared_edge_host({"org": "Bunnyhop Networks"}))
+        self.assertFalse(_is_shared_edge_host({"org": "Fastlyne Hosting"}))
+        self.assertTrue(_is_shared_edge_host({"org": "BunnyWay d.o.o."}))
 
     def test_akamai_edge_is_recognised_by_shodans_cdn_tag(self):
         self.assertTrue(_is_shared_edge_host({"org": "Akamai Technologies, Inc.", "tags": ["cdn"]}))

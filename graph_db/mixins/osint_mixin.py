@@ -45,9 +45,9 @@ def _cvss_severity(cvss) -> str | None:
 
 
 def _shodan_cve_props(cve_entry: dict) -> dict:
-    """Properties a Shodan/InternetDB passive CVE carries. A None value
-    removes the property on a refresh, so a field the source stopped
-    reporting does not linger."""
+    """Properties a Shodan/InternetDB passive CVE carries. Unknown fields are
+    left out rather than set to None, which would erase what an earlier,
+    better-informed run stored."""
     cve_id = cve_entry.get("cve_id", "")
     cvss = cve_entry.get("cvss")
     try:
@@ -55,7 +55,7 @@ def _shodan_cve_props(cve_entry: dict) -> dict:
     except (TypeError, ValueError):
         cvss = None
     port = cve_entry.get("port")
-    return {
+    props = {
         "name": cve_id,
         "cves": [cve_id],
         # Rows written before this grading carry no detection_method; the
@@ -69,6 +69,7 @@ def _shodan_cve_props(cve_entry: dict) -> dict:
         "cvss_score": cvss,
         "severity": _cvss_severity(cvss),
     }
+    return {k: v for k, v in props.items() if v is not None}
 
 
 def _split_url(url: str) -> tuple[str, str]:
@@ -438,30 +439,30 @@ class OsintMixin:
                 try:
                     # Refreshed on every run that still reports it, so a row
                     # written before the evidence fields existed gains them.
+                    # Only what this run knows is written, and the grade only
+                    # rises: a run that fell back to InternetDB (the host API
+                    # refused or paused) must not erase a banner's evidence.
+                    # The IP is the finding's only parent; a Service parent
+                    # would make the board read its product name as the host.
+                    props = _shodan_cve_props(cve_entry)
+                    method = props.pop("detection_method")
+                    verified = props.pop("verified")
                     session.run(
                         """
                         MERGE (v:Vulnerability {id: $vuln_id, user_id: $user_id,
                                                 project_id: $project_id})
                         ON CREATE SET v.source = $source
-                        SET v += $props, v.updated_at = datetime()
+                        SET v += $props, v.updated_at = datetime(),
+                            v.verified = coalesce(v.verified, false) OR $verified
+                        WITH v, {passive_catalog: 0, passive_version_match: 1, passive_verified: 2} AS rank
+                        SET v.detection_method = CASE
+                            WHEN coalesce(rank[v.detection_method], -1) > rank[$method]
+                            THEN v.detection_method ELSE $method END
                         """,
-                        vuln_id=vuln_id, source=cve_source, props=_shodan_cve_props(cve_entry),
-                        user_id=user_id, project_id=project_id
+                        vuln_id=vuln_id, source=cve_source, props=props, method=method,
+                        verified=verified, user_id=user_id, project_id=project_id
                     )
                     stats["vulnerabilities_created"] += 1
-
-                    if cve_entry.get("product") and cve_entry.get("port"):
-                        session.run(
-                            """
-                            MATCH (svc:Service {name: $product, port_number: $port, ip_address: $ip,
-                                                user_id: $user_id, project_id: $project_id})
-                            MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
-                            MERGE (svc)-[:HAS_VULNERABILITY]->(v)
-                            """,
-                            product=cve_entry["product"], port=cve_entry["port"], ip=ip,
-                            vuln_id=vuln_id, user_id=user_id, project_id=project_id,
-                        )
-                        stats["relationships_created"] += 1
 
                     session.run(
                         """
