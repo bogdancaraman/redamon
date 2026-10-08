@@ -319,10 +319,10 @@ def _probe_single_ip(
 
     # Graph names must sit under a project root; the wordlist and the user's
     # custom lines are deliberate, so only an RoE exclusion removes them.
-    out_of_scope_skipped = 0
+    skipped: set[str] = set()
     if scope is not None:
         in_scope = [h for h in graph_candidates if _candidate_in_scope(h, scope)]
-        out_of_scope_skipped = len(graph_candidates) - len(in_scope)
+        skipped |= {h.strip().strip(".").lower() for h in graph_candidates} - {h.strip().strip(".").lower() for h in in_scope}
         graph_candidates = in_scope
     candidate_set = _build_candidate_set(
         apex_domain=apex_domain,
@@ -331,9 +331,10 @@ def _probe_single_ip(
         graph_candidates=graph_candidates,
     )
     if scope is not None and scope.roe_excluded:
-        before = len(candidate_set)
-        candidate_set = {h for h in candidate_set if not _is_roe_excluded(h, list(scope.roe_excluded))}
-        out_of_scope_skipped += before - len(candidate_set)
+        excluded = {h for h in candidate_set if _is_roe_excluded(h, list(scope.roe_excluded))}
+        skipped |= excluded
+        candidate_set -= excluded
+    out_of_scope_skipped = len(skipped)
     if out_of_scope_skipped:
         print(f"[*][VhostSni] IP {ip}: skipped {out_of_scope_skipped} candidate(s) outside the project scope")
     if len(candidate_set) > max_candidates:
@@ -435,8 +436,9 @@ def _probe_single_ip(
         for hostname, layer_results in per_candidate_results.items():
             l7_res = layer_results.get("L7")
             l4_res = layer_results.get("L4")
-            l7_raw = _is_anomaly(l7_res, baseline, size_tolerance) if l7_res else False
-            l4_raw = _is_anomaly(l4_res, baseline, size_tolerance) if l4_res else False
+            # A rate limiter's 429 says nothing about the name asked for.
+            l7_raw = _is_anomaly(l7_res, baseline, size_tolerance) if _usable(l7_res) else False
+            l4_raw = _is_anomaly(l4_res, baseline, size_tolerance) if _usable(l4_res) else False
             raw_was_anomaly = l7_raw or l4_raw
 
             # Suppress probes whose response matches the IP's unknown-vhost shape
@@ -501,10 +503,14 @@ def _probe_single_ip(
             )
         suppressed_by_control_total += port_suppressed_by_control
 
-        kept, unstable = _drop_unstable(
-            kept, per_candidate_results, l7_controls, l4_controls,
-            scheme=scheme, ip=ip, port=port, timeout=timeout, concurrency=concurrency,
-        )
+        if port_key in dead_ports:
+            unstable = 0  # the port stopped answering: a second probe would only time out
+        else:
+            kept, unstable = _drop_unstable(
+                kept, per_candidate_results, l7_controls, l4_controls,
+                scheme=scheme, ip=ip, port=port, timeout=timeout, concurrency=concurrency,
+                baseline=baseline, size_tolerance=size_tolerance,
+            )
         if unstable:
             print(
                 f"[*][VhostSni] IP {ip}:{port} ({scheme}) dropped {unstable} "
@@ -592,6 +598,8 @@ def _curl_probe(
     write_out = _PROBE_META_SENTINEL.decode("ascii") + "\t".join(
         ("%{http_code}", "%{size_download}", "%{redirect_url}", "%{content_type}")
     )
+    # An IPv6 literal must be bracketed in a URL and in --resolve.
+    addr = f"[{target}]" if ":" in target else target
     if sni_hostname and scheme == "https":
         # L4 test: URL is the hostname, --resolve forces it to the IP
         url = f"{scheme}://{sni_hostname}:{port}/"
@@ -600,14 +608,14 @@ def _curl_probe(
             "-o", "-",
             "-w", write_out,
             "--max-filesize", str(_PROBE_BODY_MAX_BYTES),
-            "--resolve", f"{sni_hostname}:{port}:{target}",
+            "--resolve", f"{sni_hostname}:{port}:{addr}",
             "--connect-timeout", str(timeout),
             "--max-time", str(timeout * 3),
             url,
         ]
     else:
         # Baseline (no host_header) or L7 test (host_header set)
-        url = f"{scheme}://{target}:{port}/"
+        url = f"{scheme}://{addr}:{port}/"
         cmd = [
             "curl", "-sk",
             "-o", "-",
@@ -682,6 +690,13 @@ _VOLATILE_RULES: tuple[tuple[re.Pattern, bytes], ...] = (
     (re.compile(rb"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}| UTC)?"), b"{TS}"),
     (re.compile(rb"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT"), b"{TS}"),
     (re.compile(rb"reference(?:\s|&#32;)*(?:#|&#35;)\s*[0-9a-z.&#;]+", re.I), b"reference #{REF}"),
+    # Akamai's reference also appears bare, in its errors.edgesuite.net link,
+    # with plain or entity-encoded dots: 18.6bd3c917.1696512345.1a2b3c4d
+    (re.compile(rb"\b\d{1,3}(?:\.|&#46;)[0-9a-f]{6,10}(?:\.|&#46;)\d{9,10}(?:\.|&#46;)[0-9a-f]{4,10}\b", re.I), b"{AKREF}"),
+    # Azure Front Door's "Ref A/B/C" lines (edge node names, timestamps).
+    (re.compile(rb"\bRef [ABC]:\s*[^<\n]*"), b"Ref {REF}"),
+    # Upper-case alphanumeric request ids (S3's 16-character RequestId).
+    (re.compile(rb"\b(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{16,}\b"), b"{ID}"),
     (re.compile(rb"\bcache-[a-z0-9-]+-[A-Z]{3}\b"), b"{EDGE}"),
     # No `/` in a token: two different redirect paths must stay different.
     (re.compile(rb"(?<![\w+=-])(?=[\w+=-]*\d)[\w+=-]{20,}"), b"{TOKEN}"),
@@ -738,6 +753,14 @@ def _canonical_fingerprint(
         canon(body),
     ]
     return hashlib.sha1(b"\x00".join(parts)).hexdigest()
+
+
+# A rate limiter or an overloaded edge answers whatever was asked: no data.
+_INCONCLUSIVE_STATUSES = frozenset({429, 503})
+
+
+def _usable(probe: Optional[dict]) -> bool:
+    return bool(probe) and probe["status"] != 429
 
 
 def _is_anomaly(probe: dict, baseline: dict, size_tolerance: int) -> bool:
@@ -841,7 +864,9 @@ def _same_response(a: Optional[dict], b: Optional[dict], size_tolerance: int = 0
     if a.get("canon_hash") and b.get("canon_hash"):
         if a["canon_hash"] == b["canon_hash"]:
             return True
-        return (size_tolerance > 0 and a.get("title") == b.get("title")
+        # Without a title there is nothing to tell a moving page from a
+        # different one, so only an identical fingerprint is the same page.
+        return (size_tolerance > 0 and a.get("title") is not None and a.get("title") == b.get("title")
                 and abs(a["size"] - b["size"]) <= size_tolerance)
     return abs(a["size"] - b["size"]) <= size_tolerance
 
@@ -857,16 +882,18 @@ def _drop_unstable(
     port: int,
     timeout: int,
     concurrency: int,
+    baseline: Optional[dict] = None,
+    size_tolerance: int = 0,
 ) -> tuple[list[dict], int]:
     """Probe each surviving candidate's firing layer(s) a second time and drop
-    it when the status changed or the answer now matches a control: a
+    a layer when its status changed or its answer now matches a control: a
     transient answer (a backend that briefly served something else, a
-    rate-limit page, a load-balancer flap) is not a vhost. A page whose body
-    moves between requests (a response time, a counter, a nonce) is a live
-    application and stays.
+    load-balancer flap) is not a vhost. A page whose body moves between
+    requests (a response time, a counter, a nonce) is a live application and
+    stays. A "both" finding with one stable layer is kept as that layer.
 
-    Only fingerprinted probes are re-checked. A failed re-probe keeps the
-    finding, since a timeout proves nothing either way.
+    Only fingerprinted probes are re-checked. A re-probe that failed or was
+    rate-limited (429/503) keeps the layer, since it proves nothing.
     """
     jobs: list[tuple[int, str, dict]] = []
     for idx, a in enumerate(anomalies):
@@ -878,7 +905,7 @@ def _drop_unstable(
     if not jobs:
         return anomalies, 0
 
-    unstable: set[int] = set()
+    unstable: dict[int, set] = {}
     with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="vhostsni-re") as pool:
         futures = {}
         for idx, layer, first in jobs:
@@ -892,14 +919,31 @@ def _drop_unstable(
                 again = fut.result()
             except Exception:
                 again = None
-            if again is None:
+            if again is None or again["status"] in _INCONCLUSIVE_STATUSES:
                 continue
             controls = l4_controls if layer == "L4" else l7_controls
             if again["status"] != first["status"] or _matches_any_control(again, controls):
-                unstable.add(idx)
+                unstable.setdefault(idx, set()).add(layer)
 
-    kept = [a for i, a in enumerate(anomalies) if i not in unstable]
-    return kept, len(unstable)
+    kept: list[dict] = []
+    dropped = 0
+    for idx, a in enumerate(anomalies):
+        bad = unstable.get(idx, set())
+        fired = {"L7", "L4"} if a["layer"] == "both" else {a["layer"]}
+        if not bad:
+            kept.append(a)
+        elif bad >= fired:
+            dropped += 1
+        else:
+            (layer,) = fired - bad
+            obs = (first_results.get(a["hostname"]) or {})[layer]
+            a = dict(a, layer=layer, observed_status=obs["status"], observed_size=obs["size"],
+                     observed_fingerprint=obs.get("canon_hash") or "")
+            if baseline is not None:
+                a["size_delta"] = obs["size"] - baseline["size"]
+                a["severity"] = _classify_severity(a["hostname"], layer, baseline, obs, None, None, size_tolerance)
+            kept.append(a)
+    return kept, dropped
 
 
 def _detect_noisy_frontend(
@@ -921,15 +965,15 @@ def _detect_noisy_frontend(
         return anomalies, False
     if len(anomalies) / candidates_count < fire_rate_threshold:
         return anomalies, False
-    # The canonical fingerprint, not the raw size: a template echoing the
-    # hostname has a different size for every hostname length.
-    buckets = Counter(
-        (a["observed_status"], a.get("observed_fingerprint") or a["observed_size"])
-        for a in anomalies
-    )
-    top_two = sum(count for _, count in buckets.most_common(2))
-    if top_two / len(anomalies) >= cluster_threshold:
-        return [], True
+    # Two groupings, either one enough: by canonical fingerprint (a template
+    # echoing the hostname has a different size for every hostname length) and
+    # by exact size (a constant-size template whose per-request token no
+    # normalisation rule knows gives every name its own fingerprint).
+    for key in ("observed_fingerprint", "observed_size"):
+        buckets = Counter((a["observed_status"], a.get(key) or a["observed_size"]) for a in anomalies)
+        top_two = sum(count for _, count in buckets.most_common(2))
+        if top_two / len(anomalies) >= cluster_threshold:
+            return [], True
     return anomalies, False
 
 
@@ -1016,7 +1060,8 @@ def _build_candidate_scope(combined_result: dict, settings: dict) -> _CandidateS
     excluded = settings.get("ROE_EXCLUDED_HOSTS") if settings.get("ROE_ENABLED") else None
     return _CandidateScope(
         roots=tuple(roots),
-        roe_excluded=tuple(e for e in (excluded or []) if isinstance(e, str) and e.strip()),
+        # Candidates are lower-case without a trailing dot; so are the entries.
+        roe_excluded=tuple(e.strip().strip(".").lower() for e in (excluded or []) if isinstance(e, str) and e.strip()),
     )
 
 

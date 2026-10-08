@@ -462,6 +462,102 @@ class TestStabilityReprobe:
         assert out["findings"][0]["severity"] == "low"  # same page on both layers
 
 
+class TestDeepReviewRegressions:
+    """Cases an adversarial review showed the first version got wrong."""
+
+    @staticmethod
+    def fastly_default(host, layer, attempt):
+        if layer == "baseline":
+            return _proc(421, b"<h1>Misdirected Request</h1>")
+        return _proc(500, fastly_unknown_domain(host))
+
+    def test_a_rate_limited_second_probe_keeps_the_finding(self):
+        def responder(host, layer, attempt):
+            if host == f"admin.{APEX}" and layer != "baseline":
+                return _proc(200, ADMIN_APP, ctype="application/json") if attempt == 1 else _proc(429, b"slow down")
+            return self.fastly_default(host, layer, attempt)
+
+        out, _ = _run(responder)
+        assert [f["hostname"] for f in out["findings"]] == [f"admin.{APEX}"]
+        assert out["by_ip"][IP]["suppressed_unstable"] == 0
+
+    def test_a_steady_rate_limiter_is_not_a_vhost(self):
+        limited = set(WORDS[::3])
+
+        def responder(host, layer, attempt):
+            if host and host.split(".")[0] in limited and layer != "baseline":
+                return _proc(429, b"<h1>Too Many Requests</h1>")
+            return self.fastly_default(host, layer, attempt)
+
+        out, _ = _run(responder)
+        assert out["findings"] == []
+
+    def test_a_both_layer_finding_keeps_its_stable_layer(self):
+        def responder(host, layer, attempt):
+            if host == f"admin.{APEX}" and layer == "L4":
+                return _proc(200, b'{"service":"sni-only-console"}', ctype="application/json")
+            if host == f"admin.{APEX}" and layer == "L7" and attempt == 1:
+                return _proc(200, ADMIN_APP, ctype="application/json")
+            return self.fastly_default(host, layer, attempt)
+
+        out, _ = _run(responder)
+        [f] = out["findings"]
+        assert (f["hostname"], f["layer"]) == (f"admin.{APEX}", "L4")
+
+    def test_title_less_pages_on_l7_and_l4_that_differ_are_still_high(self):
+        l7 = {"status": 200, "size": 40, "canon_hash": "a", "title": None}
+        l4 = {"status": 200, "size": 60, "canon_hash": "b", "title": None}
+        sev = _classify_severity("blog.example.com", "both", {"status": 421, "size": 291}, l4, l7, l4, size_tolerance=50)
+        assert sev == "high"
+
+    def test_constant_size_template_with_an_unknown_token_is_still_noise(self):
+        # Every unknown name gets the same-size page with a token no rule knows
+        # (lower-case letters, no digit), so each fingerprint is unique: the
+        # size grouping is what recognises the catch-all.
+        import random
+        import string
+
+        def responder(host, layer, attempt):
+            if layer == "baseline":
+                return _proc(404, b"<h1>not found</h1>")
+            token = "".join(random.choice(string.ascii_lowercase) for _ in range(12))
+            return _proc(403, f"<Error><Code>AccessDenied</Code><Nonce>{token}</Nonce></Error>".encode())
+
+        out, _ = _run(responder)
+        assert out["findings"] == []
+        assert out["by_ip"][IP]["is_permissive_frontend"] is True
+
+    def test_akamai_reference_in_its_errors_link_normalises_away(self):
+        def page(host, ref):
+            return (f"<H1>Access Denied</H1>You don't have permission to access http://{host}/ on this server."
+                    f"<P>Reference&#32;&#35;18&#46;{ref}&#46;1696512345&#46;1a2b3c4d</P>"
+                    f"<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;{ref}&#46;1696512345&#46;1a2b3c4d</P>").encode()
+        a = _canonical_fingerprint(403, "", "text/html", page("admin.example.com", "6bd3c917"), ["admin.example.com"])
+        b = _canonical_fingerprint(403, "", "text/html", page("zz.example.com", "9a1e04c2"), ["zz.example.com"])
+        assert a == b
+
+    def test_s3_request_id_and_azure_front_door_refs_normalise_away(self):
+        s3 = "<Error><Code>NoSuchBucket</Code><RequestId>{rid}</RequestId></Error>"
+        afd = "<p>Ref A: {a}</p><p>Ref B: AMS04EDGE0315</p><p>Ref C: 2026-10-06T12:00:00Z</p>"
+        assert _canonical_fingerprint(404, "", "", s3.format(rid="7Q2X9F4K1M3N8P6R").encode(), []) == \
+            _canonical_fingerprint(404, "", "", s3.format(rid="B8C1D2E3F4A5G6H7").encode(), [])
+        assert _canonical_fingerprint(400, "", "", afd.format(a="0E5A2C").encode(), []) == \
+            _canonical_fingerprint(400, "", "", afd.format(a="9F11BD").encode(), [])
+
+    def test_ipv6_targets_are_bracketed_in_the_url_and_resolve(self):
+        captured = []
+
+        def fake_run(cmd, **kw):
+            captured.append(cmd)
+            return _proc(200, b"x")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _curl_probe("https", "admin.example.com", None, "2001:db8::10", 443, 1)
+            _curl_probe("https", None, "admin.example.com", "2001:db8::10", 443, 1)
+        assert "https://[2001:db8::10]:443/" in captured[0]
+        assert captured[1][captured[1].index("--resolve") + 1] == "admin.example.com:443:[2001:db8::10]"
+
+
 # ===========================================================================
 # 5. Scope: third-party graph names are never probed
 # ===========================================================================
@@ -506,6 +602,17 @@ class TestCandidateScope:
                          ROE_ENABLED=True, ROE_EXCLUDED_HOSTS=[f"payments.{APEX}"])
         assert f"payments.{APEX}" not in fake.probed_hosts()
         assert f"admin.{APEX}" in fake.probed_hosts()
+        assert out["by_ip"][IP]["out_of_scope_skipped"] == 1
+
+    def test_roe_entries_are_case_and_dot_insensitive(self):
+        _, fake = _run(self.responder, words=["admin", "payments"],
+                       ROE_ENABLED=True, ROE_EXCLUDED_HOSTS=[f"Payments.{APEX.upper()}."])
+        assert f"payments.{APEX}" not in fake.probed_hosts()
+
+    def test_a_name_both_graph_sourced_and_roe_excluded_is_counted_once(self):
+        recon = _recon(dns={"subdomains": {f"payments.{APEX}": {"ips": {"ipv4": [IP], "ipv6": []}}}})
+        out, _ = _run(self.responder, words=["payments"], recon=recon, VHOST_SNI_USE_GRAPH_CANDIDATES=True,
+                      ROE_ENABLED=True, ROE_EXCLUDED_HOSTS=[f"payments.{APEX}"])
         assert out["by_ip"][IP]["out_of_scope_skipped"] == 1
 
     def test_roe_is_ignored_when_roe_is_off(self):
