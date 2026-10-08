@@ -60,6 +60,16 @@ def _import_js_recon():
     sys.modules["recon.helpers.ai_signal_catalog"] = catalog
     spec.loader.exec_module(catalog)
 
+    # js_recon imports the RoE matcher at module level; it needs only the
+    # stdlib, so load the real one the same way.
+    spec = importlib.util.spec_from_file_location(
+        "recon.helpers.roe_scope",
+        os.path.join(_REPO_ROOT, "recon", "helpers", "roe_scope.py"),
+    )
+    roe_scope = importlib.util.module_from_spec(spec)
+    sys.modules["recon.helpers.roe_scope"] = roe_scope
+    spec.loader.exec_module(roe_scope)
+
     # Stub the other helpers js_recon needs at import time. We toggle every
     # non-AI analysis pass OFF in the settings so these stubs never execute.
     for name in (
