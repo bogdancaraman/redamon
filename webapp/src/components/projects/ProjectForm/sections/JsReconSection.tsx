@@ -577,7 +577,7 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                 <div className={styles.toggleRow}>
                   <div>
                     <span className={styles.toggleLabel}>Validate Extracted Endpoints</span>
-                    <p className={styles.toggleDescription}>Off by default. When on, each extracted endpoint is probed and only confirmed-dead ones are dropped before graph write. Headers below apply only to endpoint probes.</p>
+                    <p className={styles.toggleDescription}>Off by default. When on, each extracted endpoint on an in-scope host is probed and only confirmed-dead ones are dropped before graph write. Third-party hosts named in the JS (analytics, social widgets, CDNs) are never contacted. Headers below apply only to endpoint probes.</p>
                   </div>
                   <Toggle
                     checked={(data as any).jsReconValidateEndpoints ?? false}

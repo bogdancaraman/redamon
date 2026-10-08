@@ -79,8 +79,10 @@ class ProbeSkipsSSRF(unittest.TestCase):
             {"full_url": METADATA, "method": "GET"},
             {"full_url": PUBLIC, "method": "GET"},
         ]
+        # Both hosts in scope, so only the SSRF guard decides.
+        scope = ([], {"169.254.169.254", "93.184.216.34"})
         _validate_extracted_endpoints(
-            endpoints, {"JS_RECON_VALIDATE_ENDPOINTS": True}, request_func=spy
+            endpoints, {"JS_RECON_VALIDATE_ENDPOINTS": True}, scope, request_func=spy
         )
         by_url = {e["full_url"]: e for e in endpoints}
         # Metadata: blocked, never sent to the requester.

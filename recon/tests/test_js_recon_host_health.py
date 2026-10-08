@@ -76,7 +76,9 @@ class TestEndpointValidationGate:
         # The SSRF guard resolves DNS; pin it True so the live host reaches the
         # requester (the gate for the dead host runs before this check anyway).
         with mock.patch.object(jr, "is_url_safe_to_probe", return_value=True):
-            out = jr._validate_extracted_endpoints(endpoints, self._settings(), request_func=requester)
+            out = jr._validate_extracted_endpoints(
+                endpoints, self._settings(), (["example.test"], set()), request_func=requester,
+            )
         by_url = {e["full_url"]: e for e in out}
         assert by_url["https://dead.example.test/api"]["validation_error"] == "host_unreachable"
         assert by_url["https://dead.example.test/api"]["validation_status"] == "unvalidated"

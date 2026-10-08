@@ -12,6 +12,7 @@ Three modes:
 """
 
 import atexit
+import ipaddress
 import re
 import json
 import time
@@ -205,6 +206,67 @@ def _url_origin(url: str) -> str:
     except Exception:
         pass
     return ''
+
+
+def _host_of(value) -> str:
+    """Bare comparable host of a URL, ``host:port``, hostname or IP literal; '' if none."""
+    if not isinstance(value, str) or not value.strip():
+        return ''
+    value = value.strip()
+    try:
+        return str(ipaddress.ip_address(value.strip('[]')))
+    except ValueError:
+        pass
+    try:
+        host = urlparse(value if '://' in value else f'//{value}').hostname or ''
+    except ValueError:
+        return ''
+    host = host.rstrip('.')
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return host
+
+
+def _endpoint_probe_scope(combined_result: dict, js_files: list) -> tuple:
+    """``(roots, hosts)`` an extracted endpoint may be probed on.
+
+    A bundle names third-party hosts (analytics, social widgets, placeholder
+    images) as freely as its own API, and the scan has no permission to send
+    them traffic. In scope: a target host, the host a pipeline JS file was
+    fetched from (those were collected in scope), or a host under a scanned
+    root. A filtered run (IP mode, an explicit host list) keeps exactly the
+    hosts the user gave, so its roots do not widen it.
+    """
+    metadata = combined_result.get('metadata') or {}
+    fetched_from = [
+        f.get('url') for f in js_files
+        if isinstance(f.get('url'), str) and urlparse(f['url']).scheme in ('http', 'https')
+    ]
+    hosts = {
+        _host_of(h) for h in [
+            *(combined_result.get('subdomains') or []),
+            *(metadata.get('subdomain_filter') or []),
+            *(metadata.get('expanded_ips') or []),
+            *fetched_from,
+        ]
+    }
+    hosts.discard('')
+
+    roots = []
+    if not metadata.get('filtered_mode'):
+        declared = [r for r in (combined_result.get('domains') or []) if isinstance(r, str) and r.strip()]
+        roots = declared or [combined_result.get('domain') or '']
+        roots = [r.strip().strip('.').lower() for r in roots if isinstance(r, str) and r.strip()]
+    return roots, hosts
+
+
+def _in_probe_scope(url: str, scope: tuple) -> bool:
+    roots, hosts = scope
+    host = _host_of(url)
+    if not host:
+        return False
+    return host in hosts or any(host == r or host.endswith(f'.{r}') for r in roots)
 
 
 def _endpoint_probe_method(extracted_method: str) -> str:
@@ -719,8 +781,12 @@ def _validate_secrets(secrets: list, settings: dict) -> list:
     return secrets
 
 
-def _validate_extracted_endpoints(endpoints: list, settings: dict, request_func=None) -> list:
-    """Validate extracted endpoints with lightweight non-following HTTP probes."""
+def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: tuple, request_func=None) -> list:
+    """Validate extracted endpoints with lightweight non-following HTTP probes.
+
+    ``scope`` is ``_endpoint_probe_scope``'s ``(roots, hosts)``. Required, so a
+    caller cannot forget it and probe every host a bundle mentions.
+    """
     if not settings.get('JS_RECON_VALIDATE_ENDPOINTS', False):
         for endpoint in endpoints:
             endpoint['validation_status'] = 'unvalidated'
@@ -788,6 +854,10 @@ def _validate_extracted_endpoints(endpoints: list, settings: dict, request_func=
             return
 
         endpoint['resolved_url'] = resolved_url
+        if not _in_probe_scope(resolved_url, scope):
+            endpoint['validation_status'] = 'unvalidated'
+            endpoint['validation_error'] = 'out_of_scope'
+            return
         if _js_skip(resolved_url):
             endpoint['validation_status'] = 'unvalidated'
             endpoint['validation_error'] = 'host_unreachable'
@@ -1064,12 +1134,20 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         # 6. Validate endpoints
         if results.get('endpoints'):
             print(f"[*][JsRecon] Validating {len(results['endpoints'])} discovered endpoints...")
-            results['endpoints'] = _validate_extracted_endpoints(results['endpoints'], settings)
+            results['endpoints'] = _validate_extracted_endpoints(
+                results['endpoints'], settings, _endpoint_probe_scope(combined_result, js_files),
+            )
             hittable_count = sum(
                 1 for endpoint in results['endpoints']
                 if endpoint.get('validation_status') == 'hittable'
             )
             print(f"[+][JsRecon] Endpoint validation: {hittable_count} hittable")
+            out_of_scope = sum(
+                1 for endpoint in results['endpoints']
+                if endpoint.get('validation_error') == 'out_of_scope'
+            )
+            if out_of_scope:
+                print(f"[*][JsRecon] Endpoint validation: {out_of_scope} out-of-scope endpoints not probed")
 
         # 6. Subdomain feedback loop. A partial run over a Domain batch carries
         # every root it covers; a host under any of them is in scope.

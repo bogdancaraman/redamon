@@ -13,6 +13,7 @@ import json
 import tempfile
 import unittest
 import importlib.util
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
@@ -930,6 +931,9 @@ class TestEndpoints(unittest.TestCase):
         self.assertEqual(endpoints_mod.extract_endpoints([], {'JS_RECON_EXTRACT_ENDPOINTS': False}), [])
 
 
+_EXAMPLE_SCOPE = (['example.com'], set())
+
+
 class TestEndpointValidationHelpers(unittest.TestCase):
 
     def test_parse_endpoint_validation_headers_accepts_auth_and_cookie(self):
@@ -992,7 +996,7 @@ class TestEndpointValidationHelpers(unittest.TestCase):
         validated = js_recon._validate_extracted_endpoints(endpoints, {
             'JS_RECON_VALIDATE_ENDPOINTS': True,
             'JS_RECON_ENDPOINT_CUSTOM_HEADERS': ['Cookie: session=abc123'],
-        }, request_func=request_func)
+        }, _EXAMPLE_SCOPE, request_func=request_func)
 
         self.assertIs(validated, endpoints)
         self.assertEqual(validated[0]['validation_status'], 'hittable')
@@ -1020,6 +1024,7 @@ class TestEndpointValidationHelpers(unittest.TestCase):
         validated = js_recon._validate_extracted_endpoints(
             endpoints,
             {'JS_RECON_VALIDATE_ENDPOINTS': True},
+            _EXAMPLE_SCOPE,
             request_func=lambda method, url, **kwargs: calls.append((method, url, kwargs)) or Response(),
         )
 
@@ -1048,6 +1053,8 @@ class TestEndpointValidationHelpers(unittest.TestCase):
                     'Authorization: Bearer token',
                 ],
             },
+            # In scope, so it is probed, yet a different origin from the JS file.
+            (['example.com'], {'analytics.vendor.example'}),
             request_func=lambda method, url, **kwargs: calls.append((method, url, kwargs)) or Response(),
         )
 
@@ -1069,6 +1076,7 @@ class TestEndpointValidationHelpers(unittest.TestCase):
         validated = js_recon._validate_extracted_endpoints(
             endpoints,
             {'JS_RECON_VALIDATE_ENDPOINTS': True},
+            _EXAMPLE_SCOPE,
             request_func=lambda *args, **kwargs: Response(),
         )
 
@@ -1089,6 +1097,7 @@ class TestEndpointValidationHelpers(unittest.TestCase):
         validated = js_recon._validate_extracted_endpoints(
             endpoints,
             {'JS_RECON_VALIDATE_ENDPOINTS': True},
+            _EXAMPLE_SCOPE,
             request_func=lambda *args, **kwargs: calls.append((args, kwargs)),
         )
 
@@ -1108,6 +1117,7 @@ class TestEndpointValidationHelpers(unittest.TestCase):
         validated = js_recon._validate_extracted_endpoints(
             endpoints,
             {'JS_RECON_VALIDATE_ENDPOINTS': True},
+            _EXAMPLE_SCOPE,
             request_func=lambda *args, **kwargs: calls.append((args, kwargs)),
         )
 
@@ -1122,6 +1132,7 @@ class TestEndpointValidationHelpers(unittest.TestCase):
         validated = js_recon._validate_extracted_endpoints(
             endpoints,
             {'JS_RECON_VALIDATE_ENDPOINTS': False},
+            _EXAMPLE_SCOPE,
             request_func=lambda *args, **kwargs: calls.append((args, kwargs)),
         )
 
@@ -1129,6 +1140,113 @@ class TestEndpointValidationHelpers(unittest.TestCase):
         self.assertEqual(validated[0]['validation_status'], 'unvalidated')
         self.assertEqual(validated[0]['validation_error'], 'validation_disabled')
         self.assertEqual(calls, [])
+
+    def test_validate_extracted_endpoints_never_probes_a_third_party_host(self):
+        probed = []
+
+        class Response:
+            status_code = 200
+
+        endpoints = [
+            {'full_url': 'https://ns.adobe.com/personalization/dom-action', 'method': 'GET',
+             'source_js': 'https://app.example.com/static/main.js'},
+            {'full_url': 'https://picsum.photos/seed/mock-1/120/120', 'method': 'GET',
+             'source_js': 'https://app.example.com/static/main.js'},
+            {'full_url': 'https://api.example.com/v1/users', 'method': 'GET',
+             'source_js': 'https://app.example.com/static/main.js'},
+            {'path': '/admin', 'method': 'GET',
+             'source_js': 'https://app.example.com/static/main.js'},
+            # A name that only ends with the root's text is not under it.
+            {'full_url': 'https://evilexample.com/x', 'method': 'GET'},
+        ]
+
+        # The SSRF guard resolves DNS; pin it so in-scope hosts reach the requester.
+        with mock.patch.object(js_recon, 'is_url_safe_to_probe', return_value=True):
+            validated = js_recon._validate_extracted_endpoints(
+                endpoints,
+                {'JS_RECON_VALIDATE_ENDPOINTS': True, 'JS_RECON_ENDPOINT_CONCURRENCY': 1},
+                (['example.com'], {'app.example.com'}),
+                request_func=lambda method, url, **kwargs: probed.append(url) or Response(),
+            )
+
+        self.assertEqual(sorted(probed), [
+            'https://api.example.com/v1/users',
+            'https://app.example.com/admin',
+        ])
+        by_url = {e.get('full_url') or e['path']: e for e in validated}
+        for third_party in ('https://ns.adobe.com/personalization/dom-action',
+                            'https://picsum.photos/seed/mock-1/120/120',
+                            'https://evilexample.com/x'):
+            self.assertEqual(by_url[third_party]['validation_status'], 'unvalidated')
+            self.assertEqual(by_url[third_party]['validation_error'], 'out_of_scope')
+        self.assertEqual(by_url['https://api.example.com/v1/users']['validation_status'], 'hittable')
+
+    def test_validate_extracted_endpoints_empty_scope_probes_nothing(self):
+        probed = []
+        endpoints = [{'full_url': 'https://api.example.com/v1/users', 'method': 'GET'}]
+
+        validated = js_recon._validate_extracted_endpoints(
+            endpoints,
+            {'JS_RECON_VALIDATE_ENDPOINTS': True},
+            ([], set()),
+            request_func=lambda *args, **kwargs: probed.append(args),
+        )
+
+        self.assertEqual(probed, [])
+        self.assertEqual(validated[0]['validation_error'], 'out_of_scope')
+
+
+class TestEndpointProbeScope(unittest.TestCase):
+
+    def test_full_discovery_scopes_on_the_roots_and_the_fetched_hosts(self):
+        roots, hosts = js_recon._endpoint_probe_scope(
+            {'domain': 'Example.com.', 'metadata': {'filtered_mode': False}},
+            [{'url': 'https://cdn.example.net/app.js'}, {'url': 'upload://bundle.js'}],
+        )
+
+        self.assertEqual(roots, ['example.com'])
+        # The upload:// pseudo-URL names no host the scan may touch.
+        self.assertEqual(hosts, {'cdn.example.net'})
+
+    def test_partial_run_scopes_on_every_declared_root(self):
+        roots, hosts = js_recon._endpoint_probe_scope(
+            {'domain': 'a.test', 'domains': ['a.test', 'b.test'], 'subdomains': ['www.a.test']},
+            [],
+        )
+
+        self.assertEqual(roots, ['a.test', 'b.test'])
+        self.assertEqual(hosts, {'www.a.test'})
+
+    def test_filtered_run_keeps_only_the_listed_hosts(self):
+        scope = js_recon._endpoint_probe_scope(
+            {
+                'domain': 'example.com',
+                'metadata': {'filtered_mode': True, 'subdomain_filter': ['www.example.com:8443']},
+            },
+            [],
+        )
+
+        self.assertEqual(scope, ([], {'www.example.com'}))
+        self.assertTrue(js_recon._in_probe_scope('https://www.example.com/a', scope))
+        self.assertFalse(js_recon._in_probe_scope('https://api.example.com/a', scope))
+
+    def test_ip_mode_scopes_on_the_target_ips(self):
+        scope = js_recon._endpoint_probe_scope(
+            {
+                'domain': 'ip-targets.proj1',
+                'metadata': {
+                    'filtered_mode': True,
+                    'expanded_ips': ['192.0.2.10', '2001:db8::1'],
+                    'subdomain_filter': ['192.0.2.10', 'host.example.org'],
+                },
+            },
+            [],
+        )
+
+        self.assertTrue(js_recon._in_probe_scope('http://192.0.2.10:8080/api', scope))
+        self.assertTrue(js_recon._in_probe_scope('http://[2001:DB8:0::1]/api', scope))
+        self.assertTrue(js_recon._in_probe_scope('https://host.example.org/', scope))
+        self.assertFalse(js_recon._in_probe_scope('http://192.0.2.11/api', scope))
 
 
 # ============================================================
