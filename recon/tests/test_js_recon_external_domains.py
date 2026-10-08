@@ -66,5 +66,37 @@ class TestJsReconExternalDomains(unittest.TestCase):
         self.assertEqual(sorted(out), ["ok.vendor.test"])
 
 
+class TestJsReconFindingsDoNotCallTheTargetExternal(unittest.TestCase):
+    """
+    The aggregate above already dropped the target IP, but the JsReconFinding
+    list was built from the roots alone: an IP-mode root is the synthetic
+    ip-targets.<id>, so the scanned IP became an external_domain finding of
+    itself on the Priority Board.
+    """
+
+    def _split(self, urls, roots, in_scope=frozenset()):
+        from recon.main_recon_modules.js_recon import _extract_subdomains
+        return _extract_subdomains([{"full_url": u} for u in urls], roots, set(), in_scope)
+
+    def test_ip_mode_target_ips_are_not_external(self):
+        new, external = self._split(
+            ["http://192.0.2.20/static/js/app.js", "http://192.0.2.99:8080/app.js.map",
+             "https://api.vendor.test/v1"],
+            "ip-targets.p1", frozenset({"192.0.2.20"}))
+        self.assertEqual(new, [])
+        self.assertEqual(sorted(e["domain"] for e in external), ["192.0.2.99", "api.vendor.test"])
+
+    def test_the_scope_comes_from_the_run_targets(self):
+        from recon.main_recon_modules.js_recon import _first_party_scope
+        hosts = _first_party_scope({"domain": "ip-targets.p1",
+                                    "metadata": {"expanded_ips": ["192.0.2.20"]}}).hosts
+        self.assertIn("192.0.2.20", hosts)
+
+    def test_a_host_under_a_root_is_still_a_new_subdomain(self):
+        new, external = self._split(["https://dev.example.test/x"], "example.test",
+                                    frozenset({"dev.example.test"}))
+        self.assertEqual((new, external), (["dev.example.test"], []))
+
+
 if __name__ == "__main__":
     unittest.main()

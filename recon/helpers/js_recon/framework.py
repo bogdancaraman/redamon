@@ -5,6 +5,7 @@ Detects JavaScript frameworks and their versions, identifies DOM-based XSS
 sinks and prototype pollution patterns, and extracts developer comments.
 """
 
+import bisect
 import re
 import json
 import hashlib
@@ -347,14 +348,26 @@ def detect_frameworks(
 
 
 def _pick_sink_match(pattern: 're.Pattern', sink_type: str, line: str, line_offset: int, content: str):
-    """The best non-constant match of `pattern` on `line`: the first one with a
-    source nearby, else the first one. Returns (match, source) or (None, None)."""
-    first = None
+    """The best non-constant match of `pattern` on `line`: the one closest to a
+    source within _SOURCE_WINDOW, else the first one. Returns (match, source)
+    or (None, None).
+
+    Closest rather than first: a minified bundle is one line, so the first sink
+    that merely falls inside a source's window is usually an unrelated one a
+    few hundred characters earlier, and the evidence then showed the wrong code.
+    """
+    first = best = best_source = None
+    best_distance = None
     candidates = 0
     end = line_offset + len(line) + 1
 
     def following():
         return content[end:end + 200].lstrip()
+
+    lo = max(0, line_offset - _SOURCE_WINDOW)
+    hi = line_offset + len(line) + _SOURCE_WINDOW
+    sources = [(s.start(), s.end(), s.group(0)) for s in _JS_SOURCE_RE.finditer(content, lo, hi)]
+    starts = [s[0] for s in sources]
 
     for i, m in enumerate(pattern.finditer(line)):
         if i >= _MAX_SCANNED_PER_LINE or candidates >= _MAX_MATCHES_PER_LINE:
@@ -362,13 +375,20 @@ def _pick_sink_match(pattern: 're.Pattern', sink_type: str, line: str, line_offs
         if _is_constant_sink(sink_type, line, m, following):
             continue
         candidates += 1
-        at = line_offset + m.start()
-        near = content[max(0, at - _SOURCE_WINDOW):at + _SOURCE_WINDOW]
-        source = _JS_SOURCE_RE.search(near)
-        if source:
-            return m, source.group(0)
         if first is None:
             first = m
+        at = line_offset + m.start()
+        k = bisect.bisect_left(starts, at)
+        # The nearest source starts just before or just after the sink; a
+        # source counts only while it lies wholly inside the window.
+        for s_start, s_end, text in sources[max(0, k - 1):k + 1]:
+            if s_start < at - _SOURCE_WINDOW or s_end > at + _SOURCE_WINDOW:
+                continue
+            distance = abs(s_start - at)
+            if best_distance is None or distance < best_distance:
+                best, best_source, best_distance = m, text, distance
+    if best is not None:
+        return best, best_source
     return first, None
 
 

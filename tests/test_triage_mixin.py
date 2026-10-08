@@ -716,6 +716,21 @@ class TestTheBoardFilters(unittest.TestCase):
                        "AS triage_verdict_token", "AS triage_tier_inputs"):
             self.assertIn(column, client.last)
 
+    def test_a_finding_named_by_its_title_shows_that_title(self):
+        """
+        A JsReconFinding has a title and no name, so a projection without
+        n.title fell back to the node id and the board listed every JS finding
+        as `jsrf-<user>-<project>-<hash>`. The detail's group list is the same.
+        """
+        name = "coalesce(n.name, n.title, n.detector_name, n.secret_type, n.type, '') AS name"
+        client = FakeClient(records=[])
+        client.list_triage_findings(UID, PID)
+        self.assertIn(name, client.last)
+        row = {"label": "JsReconFinding", "triage_group_key": "g1", "triage_detector": ""}
+        client = SeqClient([row], [], [])
+        client.get_triage_detail(UID, PID, "jsrf-1")
+        self.assertTrue(any(name in q for q in client.queries[1:]), client.queries)
+
     def test_the_reason_is_shown_only_while_a_person_s_decision_stands(self):
         client = FakeClient(records=[])
         client.list_triage_findings(UID, PID)

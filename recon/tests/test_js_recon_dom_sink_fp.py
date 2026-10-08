@@ -174,6 +174,32 @@ class TestMinifiedBundles(unittest.TestCase):
         [s] = sinks(js)
         self.assertEqual((s["severity"], s["user_source"]), ("high", "location.hash"))
 
+    def test_the_reported_sink_is_the_one_next_to_its_source(self):
+        """
+        Sinks a few hundred characters before the source also fall inside its
+        window. The finding must point at the sink the source feeds, or the
+        evidence shows `a386.innerHTML=r386(d)` and the analyst reviews the
+        wrong code.
+        """
+        noise = "".join(f"a{i}.innerHTML=r{i}(d);" for i in range(400))
+        js = noise + "var o=document.getElementById('out');o.innerHTML=decodeURIComponent(location.hash.slice(1));"
+        [s] = sinks(js)
+        self.assertIn("o.innerHTML=decodeURIComponent(location.hash", s["pattern"])
+        self.assertEqual(s["column"], js.index("o.innerHTML") + 2)
+
+    def test_a_source_before_the_sink_is_found_too(self):
+        js = "".join(f"a{i}.innerHTML=r{i}(d);" for i in range(50)) + \
+            "var h=location.hash;out.innerHTML=h;" + "".join(f"b{i}.innerHTML=s{i}(d);" for i in range(50))
+        [s] = sinks(js)
+        self.assertEqual(s["user_source"], "location.hash")
+        self.assertIn("out.innerHTML=h", s["pattern"])
+
+    def test_a_source_outside_the_window_does_not_count(self):
+        js = "out.innerHTML=x;" + "c;" * framework._SOURCE_WINDOW + "var h=location.hash;"
+        [s] = sinks(js)
+        self.assertIsNone(s["user_source"])
+        self.assertEqual(s["severity"], "low")
+
     def test_constant_matches_do_not_use_up_the_scan_budget(self):
         shim = 'var g=Function("return this")();' * 300
         js = shim + 'var q=location.search;Function(q)();'
@@ -295,6 +321,25 @@ class TestThirdPartyScriptDowngrade(unittest.TestCase):
         r = self._results("upload://bundle.js")
         js_recon._downgrade_third_party_findings(r, {"domain": "example.com"})
         self.assertEqual(r["dom_sinks"][0]["severity"], "high")
+
+
+class TestJqueryPluginsAreCollected(unittest.TestCase):
+    """
+    The collector skipped every URL matching `jquery[.-]`, so a hash-reading
+    plugin never reached the sink detector that is built to rate it.
+    jQuery itself stays skipped.
+    """
+
+    def test_jquery_itself_is_skipped(self):
+        for path in ("/js/jquery.js", "/js/jquery.min.js", "/js/jquery-3.6.0.min.js",
+                     "/js/jquery-3.7.1.slim.min.js", "/js/jquery-ui.min.js", "/js/jquery-ui-1.13.2.js",
+                     "/js/jquery-migrate-3.4.1.min.js", "/wp-includes/js/jquery/jquery.js?ver=3.7.1"):
+            self.assertFalse(js_recon._should_include_url(f"https://app.example.com{path}", {}), path)
+
+    def test_jquery_plugins_are_analysed(self):
+        for path in ("/wp-content/plugins/gallery/js/jquery.prettyPhoto.js", "/js/jquery.fancybox.min.js",
+                     "/js/jquery-validation.js", "/js/app.jquery.js"):
+            self.assertTrue(js_recon._should_include_url(f"https://app.example.com{path}", {}), path)
 
 
 if __name__ == "__main__":

@@ -1051,7 +1051,7 @@ class TriageMixin:
                // does not order labels, so that could return 'Muted' and
                // mis-type the row (X14).
                {_FUNCTIONAL_LABEL}                 AS label,
-               coalesce(n.name, n.detector_name, n.secret_type, n.type, '') AS name,
+               coalesce(n.name, n.title, n.detector_name, n.secret_type, n.type, '') AS name,
                coalesce(n.severity, '')            AS severity,
                coalesce(n.source, '')              AS source,
                coalesce(n.matched_at, n.url, n.endpoint, '') AS location,
@@ -1328,7 +1328,7 @@ class TriageMixin:
         WHERE n.user_id = $user_id AND n.project_id = $project_id AND NOT n:Muted
           AND n.triage_group_key = $group_key
         RETURN coalesce(n.id, n.finding_id) AS id, {_FUNCTIONAL_LABEL} AS label,
-               coalesce(n.name, n.detector_name, n.secret_type, n.type, '') AS name,
+               coalesce(n.name, n.title, n.detector_name, n.secret_type, n.type, '') AS name,
                coalesce(n.triage_state, 'open') AS state,
                n.triage_priority_score AS score, coalesce(n.triage_tier, '') AS tier,
                coalesce(n.triage_host, '') AS host

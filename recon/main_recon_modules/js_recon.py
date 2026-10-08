@@ -129,7 +129,10 @@ _FRAMEWORK_JS_PATTERNS = [
 # Paths to skip (third-party libraries, CDN-hosted)
 _SKIP_PATTERNS = [
     re.compile(r'/node_modules/'),
-    re.compile(r'jquery[.-]'),
+    # jQuery itself (core, slim, migrate, UI), not its plugins: a plugin such as
+    # jquery.prettyPhoto.js is where hash-reading DOM XSS has lived, and the sink
+    # detector already rates library code by whether a source is in sight.
+    re.compile(r'/jquery(?:-ui|-migrate)?(?:[.-]\d+(?:\.\d+)*)?(?:\.slim)?(?:\.min)?\.js(?:[?#]|$)'),
     re.compile(r'bootstrap\.min\.js'),
     re.compile(r'lodash\.min\.js'),
     re.compile(r'react\.production\.min\.js'),
@@ -1032,12 +1035,16 @@ def _extract_subdomains(
     endpoints: list,
     root_domain,
     known_subdomains: set,
+    in_scope_hosts: frozenset = frozenset(),
 ) -> tuple:
     """
     Extract unique subdomains and external domains from JS-discovered endpoints.
 
     ``root_domain`` is one root, or a list: a partial run over a Domain batch
     covers several, and a host under any of them is in scope, not external.
+    ``in_scope_hosts`` are the target's own hosts outside every root: an IP-mode
+    run's root is the synthetic ``ip-targets.<id>``, so without them the
+    scanned IPs were reported as external domains of themselves.
 
     Returns (new_subdomains: list, external_domains: list)
     """
@@ -1062,6 +1069,8 @@ def _extract_subdomains(
         if any(hostname == root or hostname.endswith(f'.{root}') for root in roots):
             if hostname not in known_subdomains:
                 new_subdomains.add(hostname)
+        elif hostname in in_scope_hosts:
+            continue
         else:
             if hostname not in external_domains:
                 external_domains[hostname] = {
@@ -1311,6 +1320,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
             all_urls_for_subdomain_check,
             scope_roots,
             known_subs,
+            _first_party_scope(combined_result).hosts,
         )
         results['discovered_subdomains'] = new_subs
         results['external_domains'] = ext_domains
