@@ -104,6 +104,20 @@ class TestSourceMapFields(unittest.TestCase):
         _assert_flat(self, props)
 
 
+class TestInlineSourceMap(unittest.TestCase):
+    def test_an_inline_map_is_stored_as_a_label_not_its_payload(self):
+        payload = "data:application/json;base64," + "A" * 900_000
+        props = _written({"source_maps": [{
+            "id": "sm3", "finding_type": "source_map_exposure", "severity": "high",
+            "js_url": "https://app.example.com/main.js", "map_url": payload, "accessible": True,
+            "discovery_method": "comment", "files_count": 1, "first_party_files": 1,
+            "has_sources_content": True, "source_files": ["src/App.tsx"], "secrets_in_source": 0, "secrets": [],
+        }]})["source_map_exposure"]
+        for key in ("map_url", "evidence", "detail"):
+            self.assertLess(len(props[key]), 300, key)
+        self.assertTrue(props["map_url"].startswith("data:application/json;base64,…"))
+
+
 class TestDomSinkFields(unittest.TestCase):
     def test_sink_keeps_location_source_and_vendor_flag(self):
         props = _written({"dom_sinks": [{

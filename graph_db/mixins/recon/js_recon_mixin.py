@@ -17,13 +17,21 @@ from graph_db.mixins.recon.scope import build_host_scope, host_in_scope
 _VETTED_HOSTNAME_SOURCES = ("js_recon", "tlsx", "certificate_san")
 
 
+def _displayable_map_url(map_url: str) -> str:
+    """An inline `data:` map is the whole map, megabytes of base64: keep a
+    label, not the payload. Other URLs are capped too."""
+    if map_url.startswith("data:"):
+        return f"{map_url.split(',', 1)[0]},… (inline source map, {len(map_url)} chars)"
+    return map_url[:2000]
+
+
 def _finding_type_props(data_key: str, finding: dict) -> dict:
     """The fields one finding kind carries beyond the shared title/detail/
     evidence, flattened to scalars and string lists (a property cannot hold a
     map). A source map's own secret hits stay a count: they are pattern
     matches inside the map's source text, not separate Secret nodes."""
     if data_key == "source_maps":
-        map_url = finding.get("map_url") or ""
+        map_url = _displayable_map_url(finding.get("map_url") or "")
         first_party = int(finding.get("first_party_files") or 0)
         files = int(finding.get("files_count") or 0)
         if finding.get("accessible"):

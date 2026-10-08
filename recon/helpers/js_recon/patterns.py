@@ -289,9 +289,10 @@ _RAW_PATTERNS = [
     ("GCP Storage", r"https?://storage\.googleapis\.com/([a-zA-Z0-9._-]+)", "medium", "high", "infrastructure", None),
     ("GCP gs:// URL", r"gs://([a-zA-Z0-9._-]+)", "medium", "high", "infrastructure", None),
     ("Azure Blob Storage", r"https?://([a-zA-Z0-9]+)\.blob\.core\.windows\.net", "medium", "high", "infrastructure", None),
-    # The keyword must be a whole host-label word: `dev.`, `api-dev.`, `staging2.`
-    # match; `developer.`, `latest.`, `localhost` do not.
-    ("Internal/Staging URL", r"https?://[a-zA-Z0-9.-]*?(?<![a-zA-Z])(staging|internal|dev|test|local|admin)(?![a-zA-Z])[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}", "low", "low", "infrastructure", None),
+    # The keyword must be a word of a host label, alone or in a common compound
+    # (`dev.`, `api-dev.`, `devapi.`, `testing.`, `adminpanel.`, `localdev.`);
+    # `developer.`, `latest.`, `contest.` and `localhost` do not match.
+    ("Internal/Staging URL", r"(?i)https?://[a-z0-9.-]*?(?<![a-z])(?:local|api|app|web)?(staging|stage|internal|dev(?:elopment)?|test(?:s|ing)?|local|admin)(?:api|app|panel|portal|web)?(?![a-z])[a-z0-9.-]*\.[a-z]{2,}", "low", "low", "infrastructure", None),
     ("Localhost with Port", r"(?:localhost|127\.0\.0\.1):\d{2,5}", "low", "medium", "infrastructure", None),
 
     # ========== LOW / INFO ==========
@@ -462,12 +463,16 @@ _I18N_KEY = re.compile(r'^[A-Za-z_]+(?:\.[A-Za-z_]+)+$')
 # template reference, markup. A credential that merely STARTS with $ or #
 # (`$Pr0d-Db!2024`) has none of these shapes and is kept.
 _CODE_SHAPED_VALUE = re.compile(
-    r'^(?:/[\w\-./:?=&%#~]*'          # a route or path
+    r'^(?:/[a-z0-9_\-.~]*(?:/[\w\-.~]*)+(?:\?[\w\-=&%.]*)?'  # a multi-segment route
+    r'|/[a-z0-9_\-.~]+(?:\?[\w\-=&%.]*)?'                      # a lower-case one-segment route
     r'|[#.][A-Za-z][A-Za-z_-]*'        # #id / .class (a digit mix reads as a password)
     r'|\[[^\]]+\]'                     # [name=password]
-    r'|\$[A-Za-z_]\w*'                 # $ENV_VAR
+    r'|\$[A-Z_][A-Z0-9_]*'              # $ENV_VAR (upper case, by convention)
     r'|<[^>]*>)$'                     # markup
 )
+# A base64 secret is not a route even when it starts with "/": it has no
+# lower-case path words between its slashes and usually ends in "=".
+_BASE64ISH = re.compile(r'^[A-Za-z0-9+/]{16,}={0,2}$')
 _FIELD_NAME_WORDS = ('password', 'passwd', 'pwd', 'secret', 'token', 'apikey', 'api_key', 'api-key')
 
 
@@ -486,20 +491,31 @@ def _generic_value_is_noise(name: str, matched_text: str) -> bool:
     # "Summer 2024!" has a space too, and is kept.
     if any(c.isspace() for c in value) and (not re.search(r'\d', value) or len(value.split()) >= 3):
         return True
-    if _PLACEHOLDER_VALUE.match(value) or _I18N_KEY.match(value) or _CODE_SHAPED_VALUE.match(value):
+    if _PLACEHOLDER_VALUE.match(value) or _I18N_KEY.match(value):
+        return True
+    if _CODE_SHAPED_VALUE.match(value) and not _BASE64ISH.match(value):
         return True
     if '${' in value or '://' in value:
         return True
     if re.fullmatch(r'[A-Za-z_-]+', value) and any(w in value.lower() for w in _FIELD_NAME_WORDS):
         return True
-    if name in ('Generic API Key', 'Generic Token'):
-        # A key or token is random: an identifier like `getApiKeyFromStorage`
-        # has no digit, and a real one does not read as low-entropy text.
-        if not re.search(r'\d', value) or not re.search(r'[A-Za-z]', value):
-            return True
-        if _shannon_entropy(value) < 3.0:
-            return True
+    if name in ('Generic API Key', 'Generic Token') and _looks_like_identifier(value):
+        # `getApiKeyFromStorageService` names a key; a random one has no words.
+        return True
     return False
+
+
+def _looks_like_identifier(value: str) -> bool:
+    """A letters-only value made of word-like parts (camelCase, snake_case,
+    kebab-case or one long word), as opposed to random letters, whose parts
+    are short and often vowel-less."""
+    if not re.fullmatch(r'[A-Za-z_-]+', value):
+        return False
+    parts = [p for p in re.split(r'[_-]|(?<=[a-z])(?=[A-Z])', value) if p]
+    if not parts:
+        return False
+    with_vowel = sum(1 for p in parts if re.search(r'[aeiouAEIOU]', p))
+    return sum(len(p) for p in parts) / len(parts) >= 3.5 and with_vowel / len(parts) >= 0.8
 
 
 def _collapse_span_duplicates(findings: list) -> list:

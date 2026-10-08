@@ -118,6 +118,14 @@ class TestRealSinksStayDetected(unittest.TestCase):
 
     def test_explicit_global_eval(self):
         self.assertEqual(types('window.eval(code); globalThis.Function(body);'), ["eval", "Function"])
+        self.assertEqual(types('top.eval(code);'), ["eval"])
+
+    def test_a_navigation_write_is_not_its_own_source(self):
+        # `location.href = t` is the sink; only reading location.href is a source.
+        [s] = sinks("function go(t){window.location.href=t}")
+        self.assertEqual((s["type"], s["severity"]), ("location.href", "low"))
+        [s] = sinks("var back=location.href;el.innerHTML=back;")
+        self.assertEqual(s["severity"], "high")
 
     def test_template_literal_with_interpolation_is_dynamic(self):
         self.assertEqual(types('el.innerHTML = `<b>${name}</b>`;'), ["innerHTML"])
@@ -130,10 +138,14 @@ class TestRealSinksStayDetected(unittest.TestCase):
     def test_concatenated_settimeout_string(self):
         self.assertEqual(types('setTimeout("go(" + id + ")", 10);'), ["setTimeout"])
 
-    def test_proto_writes(self):
-        self.assertEqual(types('target.__proto__ = src;'), ["__proto__"])
-        self.assertEqual(types('obj["__proto__"] = v;'), ["__proto__"])
+    def test_writes_through_proto_are_sinks(self):
+        self.assertEqual(types('obj.__proto__.polluted = 1;'), ["__proto__"])
+        self.assertEqual(types('o["__proto__"][k] = v;'), ["__proto__"])
         self.assertEqual(types('o.constructor.prototype.isAdmin = true;'), ["constructor.prototype"])
+
+    def test_the_set_prototype_of_shim_is_not_a_sink(self):
+        # TypeScript/Babel extendStatics: `d.__proto__ = b`.
+        self.assertEqual(types('var e=function(d,b){d.__proto__=b};'), [])
 
     def test_react_html_from_props(self):
         self.assertEqual(types('h("div",{dangerouslySetInnerHTML:{__html:props.body}})'), ["dangerouslySetInnerHTML"])
@@ -155,6 +167,12 @@ class TestMinifiedBundles(unittest.TestCase):
         [s] = sinks(js)
         self.assertEqual(s["severity"], "critical")
         self.assertIn("Function(q)", s["pattern"])
+
+    def test_many_earlier_sinks_do_not_hide_a_sourced_one(self):
+        js = "".join(f"a{i}.innerHTML=r{i}(d);" for i in range(400)) + \
+            "o.innerHTML=decodeURIComponent(location.hash.slice(1));"
+        [s] = sinks(js)
+        self.assertEqual((s["severity"], s["user_source"]), ("high", "location.hash"))
 
     def test_constant_matches_do_not_use_up_the_scan_budget(self):
         shim = 'var g=Function("return this")();' * 300
@@ -197,6 +215,11 @@ class TestVendorCode(unittest.TestCase):
             "https://app.example.com/_next/static/chunks/pages/account-1a2b.js",
             "https://app.example.com/js/adventure.js",
             "https://app.example.com/js/environment.js",
+            # The host is the target's; a path word is not a vendor directory.
+            "https://vendor.example.com/static/js/main.js",
+            "https://runtime.example.com/app.js",
+            "https://app.example.com/vendor-portal/app.js",
+            "https://app.example.com/js/jquery-checkout.js",
         ):
             self.assertFalse(is_vendor_js_url(url), url)
 

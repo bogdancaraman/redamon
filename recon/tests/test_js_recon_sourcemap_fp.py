@@ -176,6 +176,16 @@ class TestOwnership(unittest.TestCase):
         sm.analyze_sourcemap(FIRST_PARTY_MAP, MAP, JS, scan)
         self.assertEqual(scanned, [f"{MAP}:webpack:///./src/App.tsx", f"{MAP}:webpack:///./src/api/client.ts"])
 
+    def test_a_null_source_keeps_the_pairing_with_its_text(self):
+        m = {"version": 3, "mappings": "AAAA", "sources": [None, "src/a.js"],
+             "sourcesContent": [None, "const KEY = 1;"]}
+        r = sm.analyze_sourcemap(m, MAP, JS)
+        self.assertEqual((r["severity"], r["has_sources_content"], r["first_party_files"]), ("high", True, 1))
+
+    def test_next_js_runtime_is_library_code(self):
+        for src in ("webpack://_N_E/webpack/runtime/compat", "webpack://app/(webpack)/buildin/global.js"):
+            self.assertTrue(sm._is_vendor_source(src), src)
+
     def test_index_map_sources_are_counted(self):
         index = {"version": 3, "sections": [
             {"offset": {"line": 0, "column": 0}, "map": FIRST_PARTY_MAP},
@@ -205,6 +215,23 @@ class TestDiscovery(unittest.TestCase):
         for reason in ("not_found", "invalid_schema", "not_json", "unreachable", "unsafe"):
             self.assertEqual(self._discover((None, reason)), [], reason)
 
+    def test_a_map_on_another_unreachable_host_is_reported(self):
+        # `sourceMappingURL=http://build.corp.internal/...` leaks a build host.
+        js_files = [{"url": JS, "content": "x;\n//# sourceMappingURL=http://build.example.internal:8080/app.js.map",
+                     "headers": {}}]
+
+        def fake_fetch(url, timeout=10, outcome=None):
+            outcome["reason"] = "unsafe"
+            return None
+
+        with patch.object(sm, "_fetch_sourcemap", side_effect=fake_fetch):
+            [row] = sm.discover_and_analyze_sourcemaps(js_files, {"JS_RECON_SOURCE_MAPS": True})
+        self.assertEqual((row["finding_type"], row["fetch_result"]), ("source_map_reference", "unsafe"))
+        self.assertEqual(row["map_url"], "http://build.example.internal:8080/app.js.map")
+
+    def test_an_unreachable_map_on_the_same_host_reports_nothing(self):
+        self.assertEqual(self._discover((None, "unreachable")), [])
+
     def test_referenced_map_behind_auth_is_an_info_reference(self):
         [row] = self._discover((None, "http_403"))
         self.assertEqual((row["finding_type"], row["severity"], row["fetch_result"]),
@@ -219,6 +246,13 @@ class TestDiscovery(unittest.TestCase):
 
 
 class TestThirdPartyHost(unittest.TestCase):
+    def test_a_foreign_hosts_map_with_secret_hits_keeps_its_severity(self):
+        results = {"source_maps": [{"js_url": "https://cdn.marketing-vendor.test/a.js", "severity": "high",
+                                    "secrets_in_source": 2}]}
+        js_recon._downgrade_third_party_findings(results, {"domain": "example.com"})
+        self.assertEqual((results["source_maps"][0]["severity"], results["source_maps"][0]["third_party"]),
+                         ("high", True))
+
     def test_map_of_a_script_on_a_foreign_host_is_info(self):
         results = {"source_maps": [
             {"js_url": "https://js.marketing-vendor.test/loader.js", "severity": "high"},

@@ -9,6 +9,7 @@ import re
 import json
 import hashlib
 from typing import Optional
+from urllib.parse import urlparse
 
 
 # ========== FRAMEWORK SIGNATURES ==========
@@ -134,7 +135,8 @@ FRAMEWORK_SIGNATURES = [
 # `eval`/`Function` must not follow an identifier character or a dot, so
 # `_eval(`, `math.eval(` and `isFunction(` are not the global; the explicit
 # `window.`/`globalThis.`/`self.` forms still are.
-_GLOBAL_CALLEE = r'(?:(?<![\w$.])|(?<=window\.)|(?<=globalThis\.)|(?<=self\.))'
+_GLOBAL_CALLEE = (r'(?:(?<![\w$.])|(?<=window\.)|(?<=globalThis\.)|(?<=self\.)'
+                  r'|(?<=top\.)|(?<=parent\.)|(?<=frames\.))')
 DOM_SINK_PATTERNS = [
     # Direct HTML injection. `(?!=)` keeps comparisons (`innerHTML == ""`) out.
     (re.compile(r'\.innerHTML\s*=(?!=)'), 'innerHTML', 'high', 'Direct HTML injection via innerHTML'),
@@ -157,9 +159,11 @@ DOM_SINK_PATTERNS = [
     # Cross-origin messaging
     (re.compile(r'postMessage\s*\('), 'postMessage', 'medium', 'Cross-origin messaging -- check origin validation'),
 
-    # Prototype pollution: writes only. The bare `__proto__` token is mostly
-    # the defence (`key === "__proto__"`, `{__proto__: null}`).
-    (re.compile(r'\.__proto__\s*=(?!=)|\[\s*["\']__proto__["\']\s*\]\s*=(?!=)'), '__proto__', 'high', 'Prototype pollution vector via __proto__'),
+    # Prototype pollution: a write THROUGH __proto__ (`o.__proto__.x = v`,
+    # `o["__proto__"][k] = v`). The bare token is mostly the defence
+    # (`key === "__proto__"`, `{__proto__: null}`), and `d.__proto__ = b` is
+    # the TypeScript/Babel setPrototypeOf shim.
+    (re.compile(r'(?:\.__proto__|\[\s*["\']__proto__["\']\s*\])\s*(?:\.[\w$]+|\[[^\]]+\])\s*=(?!=)'), '__proto__', 'high', 'Prototype pollution vector via __proto__'),
     (re.compile(r'constructor\.prototype(?:\.[\w$]+|\[[^\]]+\])\s*=(?!=)'), 'constructor.prototype', 'high', 'Prototype pollution via constructor.prototype'),
     (re.compile(r'Object\.assign\s*\([^)]*,\s*(?:req|params|query|body|input|data|user)'), 'Object.assign', 'high', 'Potential prototype pollution via Object.assign with user input'),
 
@@ -193,8 +197,12 @@ _CONSTANT_CHECKS = {
 # _SOURCE_WINDOW characters keeps its severity; a lexical sink with no source
 # in sight is a lead, not a finding.
 _JS_SOURCE_RE = re.compile(
-    r'location\s*\.\s*(?:hash|search|href|pathname)\b'
-    r'|document\s*\.\s*(?:URL|documentURI|baseURI|referrer|cookie)\b'
+    # Read, not written: `location.href = x` is the navigation sink itself,
+    # and `document.cookie = x` sets a cookie.
+    r'location\s*\.\s*(?:hash|search|pathname)\b'
+    r'|location\s*\.\s*href\b(?!\s*=(?!=))'
+    r'|document\s*\.\s*(?:URL|documentURI|baseURI|referrer)\b'
+    r'|document\s*\.\s*cookie\b(?!\s*=(?!=))'
     r'|window\s*\.\s*name\b'
     r'|URLSearchParams'
     r'|(?:local|session)Storage\s*\.\s*getItem'
@@ -209,28 +217,45 @@ _SOURCE_WINDOW = 400
 _EVIDENCE_RADIUS = 120
 # Non-constant matches examined per sink type per line, and all matches: a
 # minified bundle is one line, and constant shims must not use up the budget.
-_MAX_MATCHES_PER_LINE = 200
-_MAX_SCANNED_PER_LINE = 5000
+_MAX_MATCHES_PER_LINE = 5000
+_MAX_SCANNED_PER_LINE = 50000
 
 # Library, runtime and CMS-plugin code the target ships but did not write.
+# Matched on the URL PATH only (a host named vendor.example.com is the
+# target's), and on a whole directory or a file name, so /vendor-portal/ is not.
 _VENDOR_URL_RE = re.compile(
     r'/node_modules/|/bower_components/|/wp-includes/|/wp-content/plugins/'
-    r'|/vendors?/|[/._~-]vendors?[._~-]|chunk-vendors|/polyfills?[/._-]|[/._~-]polyfills?[._-]'
-    r'|/runtime[._~-]|[/._~-]runtime[._~-][\w.~-]*\.js|webpack-runtime'
-    r'|jquery|lodash|moment(?:\.min)?\.js|core-js|bootstrap(?:\.bundle)?(?:\.min)?\.js',
+    r'|/vendors?/|/vendors?[.~][^/]*\.js$|[./~-]vendors?[.~][^/]*\.js$|chunk-vendors'
+    r'|/polyfills?/|/polyfills?[.~-][^/]*\.js$'
+    r'|/runtime[.~-][^/]*\.js$|webpack-runtime'
+    r'|/jquery(?:[.-](?:\d|min|ui|migrate)[^/]*)?\.js$|/lodash(?:\.min)?\.js$|/moment(?:\.min)?\.js$'
+    r'|/core-js/|/bootstrap(?:\.bundle)?(?:\.min)?\.js$',
     re.IGNORECASE,
 )
+# Any sink at all on a line, so most lines of a large file skip the per-sink
+# pass; the per-pattern regexes stay the authority on what matched.
+_ANY_SINK_RE = None
 
 _SEVERITY_RANK = {'info': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
 
 
+def _any_sink(line: str) -> bool:
+    global _ANY_SINK_RE
+    if _ANY_SINK_RE is None:
+        _ANY_SINK_RE = re.compile('|'.join(f'(?:{p.pattern})' for p, *_ in DOM_SINK_PATTERNS))
+    return bool(_ANY_SINK_RE.search(line))
+
+
 def is_vendor_js_url(url: str) -> bool:
     """True for a JS file whose path marks it as library/runtime/plugin code."""
-    path = (url or '').split('?', 1)[0].split('#', 1)[0]
+    try:
+        path = urlparse(url or '').path if '://' in (url or '') else (url or '').split('?', 1)[0].split('#', 1)[0]
+    except ValueError:
+        return False
     return bool(_VENDOR_URL_RE.search(path))
 
 
-def _is_constant_sink(sink_type: str, line: str, match: 're.Match', following: str = '') -> bool:
+def _is_constant_sink(sink_type: str, line: str, match: 're.Match', following=lambda: '') -> bool:
     check = _CONSTANT_CHECKS.get(sink_type)
     if check == 'call':
         paren = line.find('(', match.start())
@@ -243,7 +268,7 @@ def _is_constant_sink(sink_type: str, line: str, match: 're.Match', following: s
         if not m:
             return False
         at_line_end = m.end() == len(line) and not line[m.start():m.end()].rstrip().endswith((';', ',', ')', '}', ']'))
-        return not (at_line_end and _CONTINUATION.match(following))
+        return not (at_line_end and _CONTINUATION.match(following()))
     if check == 'html_prop':
         return bool(_CONST_HTML_PROP.match(line, match.start()))
     return False
@@ -327,7 +352,10 @@ def _pick_sink_match(pattern: 're.Pattern', sink_type: str, line: str, line_offs
     first = None
     candidates = 0
     end = line_offset + len(line) + 1
-    following = content[end:end + 200].lstrip()
+
+    def following():
+        return content[end:end + 200].lstrip()
+
     for i, m in enumerate(pattern.finditer(line)):
         if i >= _MAX_SCANNED_PER_LINE or candidates >= _MAX_MATCHES_PER_LINE:
             break
@@ -366,6 +394,9 @@ def detect_dom_sinks(content: str, source_url: str) -> list:
     offset = 0
 
     for line_num, line in enumerate(lines, 1):
+        if not _any_sink(line):
+            offset += len(line) + 1
+            continue
         try:
             for pattern, sink_type, severity, description in DOM_SINK_PATTERNS:
                 # Deduplicate by sink type + source file + line

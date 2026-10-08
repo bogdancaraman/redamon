@@ -58,7 +58,8 @@ function generateEtag(data: JsReconResponse): string {
     data.source_maps, data.dev_comments, data.emails, data.ip_addresses, data.dev_references,
     data.object_references, data.cloud_assets, data.external_domains,
   ]) {
-    for (const row of list) hash.update(`${row.nodeId ?? ''},`)
+    // updatedAt too: a rescan that re-rates the same nodes keeps their ids.
+    for (const row of list) hash.update(`${row.nodeId ?? ''}@${row.updatedAt ?? ''},`)
     hash.update('|')
   }
   return hash.digest('hex').slice(0, 16)

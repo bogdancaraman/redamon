@@ -376,7 +376,10 @@ def _downgrade_third_party_findings(results: dict, combined_result: dict) -> Non
     for source_map in results.get('source_maps') or []:
         if _is_third_party_url(source_map.get('js_url', ''), first_party):
             source_map['third_party'] = True
-            source_map['severity'] = 'info'
+            # Secret hits in the map's own source text are worth a look
+            # whoever serves it.
+            if not source_map.get('secrets_in_source'):
+                source_map['severity'] = 'info'
 
 
 def _endpoint_probe_method(extracted_method: str) -> str:

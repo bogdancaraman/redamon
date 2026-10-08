@@ -89,6 +89,13 @@ class TestGenericPatternsJudgeTheValue(unittest.TestCase):
             self.assertIn("Hardcoded Password", generic(js), js)
         self.assertIn("Generic Token", generic('auth_token: "enterprise_7f3a9b2c4d5e6f70"'))
 
+    def test_more_real_value_shapes_still_report(self):
+        self.assertIn("Hardcoded Password", generic('pwd = "$ecureP4ss2024"'))
+        self.assertIn("Hardcoded Password", generic('pwd = "/Pa55w0rd"'))
+        self.assertIn("Generic Secret", generic('client_secret: "/xYz9Ab3Cd/eFg1Hi2Jk7LmN0pQrStUvWx=="'))
+        # A random key with no digit is still a key.
+        self.assertIn("Generic API Key", generic('apiKey: "kGpqXRtLmzWcVbNhJsYdFaQe"'))
+
     def test_env_var_and_selector_shapes_are_still_noise(self):
         for js in ('password = "$DB_PASSWORD"', 'secret: ".secret-input"', 'password = "#pw"',
                    'secret: "[name=client_secret]"'):
@@ -118,7 +125,10 @@ class TestInternalUrlNeedsAWholeWord(unittest.TestCase):
 
     def test_keyword_labels(self):
         for url in ("https://dev.example.com", "https://api-dev.example.com", "https://staging2.example.com",
-                    "https://internal.example.com", "https://admin.example.com", "https://qa-test.example.com"):
+                    "https://internal.example.com", "https://admin.example.com", "https://qa-test.example.com",
+                    "https://devapi.example.com", "https://testing.example.com", "https://development.example.com",
+                    "https://localdev.example.com", "https://adminpanel.example.com", "https://internalapi.example.com",
+                    "https://DEV.EXAMPLE.COM"):
             self.assertTrue(self._hits(url), url)
 
 

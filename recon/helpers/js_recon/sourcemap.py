@@ -34,6 +34,7 @@ DEFAULT_SOURCEMAP_PROBE_PATHS = [
 
 
 _REFERENCE_WORTH_REPORTING = frozenset({'http_401', 'http_403'})
+_REFERENCE_WORTH_REPORTING_ELSEWHERE = frozenset({'unsafe', 'unreachable'})
 
 
 def check_sourcemap_comment(content: str) -> Optional[str]:
@@ -206,8 +207,9 @@ def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None
 # but did not write. Matched after the `webpack:///`-style scheme is removed.
 _VENDOR_SOURCE_RE = re.compile(
     r'(?:^|/)(?:node_modules|bower_components|jspm_packages)/'
-    r'|^(?:\./)?webpack/(?:bootstrap|runtime|universalModuleDefinition)'
-    r'|^\(webpack\)|^external[ "]|^~/',
+    # Unanchored: Next.js prefixes its own runtime (`webpack://_N_E/webpack/runtime/...`).
+    r'|(?:^|/)webpack/(?:bootstrap|runtime|universalModuleDefinition)'
+    r'|\(webpack\)|^external[ "]|^~/',
     re.IGNORECASE,
 )
 _SOURCE_SCHEME = re.compile(r'^[a-z][a-z0-9+.-]*:/*', re.IGNORECASE)
@@ -221,18 +223,22 @@ def _is_vendor_source(source: str) -> bool:
 def _map_sources(map_data: dict) -> tuple:
     """(sources, sourcesContent) of a flat map, or of every inline section of
     an index map."""
+    # A null source keeps its slot (as ""): sourcesContent pairs by index.
+    def flat(m: dict) -> tuple:
+        s = [x if isinstance(x, str) else '' for x in (m.get('sources') or [])]
+        c = list(m.get('sourcesContent') or [])
+        return s, c + [None] * (len(s) - len(c))
+
     if isinstance(map_data.get('sections'), list):
         sources, contents = [], []
         for section in map_data['sections']:
             inner = (section or {}).get('map') if isinstance(section, dict) else None
             if isinstance(inner, dict):
-                s = [x for x in (inner.get('sources') or []) if isinstance(x, str)]
-                c = list(inner.get('sourcesContent') or [])
+                s, c = flat(inner)
                 sources.extend(s)
-                contents.extend(c + [None] * (len(s) - len(c)))
+                contents.extend(c[:len(s)])
         return sources, contents
-    sources = [x for x in (map_data.get('sources') or []) if isinstance(x, str)]
-    return sources, list(map_data.get('sourcesContent') or [])
+    return flat(map_data)
 
 
 def analyze_sourcemap(
@@ -259,7 +265,7 @@ def analyze_sourcemap(
         dict with: js_url, map_url, sources, source_count, secrets_in_source, file_paths
     """
     sources, sources_content = _map_sources(map_data)
-    first_party = [i for i, s in enumerate(sources) if not _is_vendor_source(s)]
+    first_party = [i for i, s in enumerate(sources) if s and not _is_vendor_source(s)]
     first_party_content = any(
         isinstance(sources_content[i], str) and sources_content[i].strip()
         for i in first_party if i < len(sources_content)
@@ -278,10 +284,10 @@ def analyze_sourcemap(
         'map_url': map_url,
         'accessible': True,
         'discovery_method': 'probe',
-        'files_count': len(sources),
+        'files_count': len([x for x in sources if x]),
         'first_party_files': len(first_party),
         'has_sources_content': first_party_content,
-        'source_files': [sources[i] for i in first_party][:100] or sources[:100],
+        'source_files': [sources[i] for i in first_party][:100] or [x for x in sources if x][:100],
         'secrets_in_source': 0,
         'secrets': [],
         'severity': severity,
@@ -407,9 +413,14 @@ def discover_and_analyze_sourcemaps(
                 result['discovery_method'] = discovery_method
                 return [result]
             # Referenced but not served. Only an access refusal says the map
-            # exists somewhere; a 404, an SPA's HTML shell or a JSON error page
-            # says nothing, and reporting those buried the board in rows.
-            if outcome.get('reason') not in _REFERENCE_WORTH_REPORTING:
+            # exists somewhere, or a reference to ANOTHER host we could not or
+            # may not reach (an internal build server leaks its name); a 404,
+            # an SPA's HTML shell or a JSON error page says nothing, and
+            # reporting those buried the board in rows.
+            reason = outcome.get('reason')
+            other_host = urlparse(map_url).hostname not in (None, urlparse(js_url).hostname)
+            if reason not in _REFERENCE_WORTH_REPORTING and not (
+                    other_host and reason in _REFERENCE_WORTH_REPORTING_ELSEWHERE):
                 return []
             finding_id = hashlib.sha256(f"srcmap-ref:{js_url}:{map_url}".encode()).hexdigest()[:16]
             return [{
