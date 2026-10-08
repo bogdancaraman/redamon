@@ -35,7 +35,7 @@ export type Unit =
   | 'bytes' | 'depth' | 'percent' | 'ratio' | 'port' | 'none'
 export type Validator =
   | 'docker_image' | 'http_header' | 'project_file' | 'project_file_name'
-  | 'status_codes' | 'severity' | 'scan_modules' | 'hostname' | 'url'
+  | 'status_codes' | 'severity' | 'scan_modules' | 'hostname' | 'hostname_list' | 'url'
   | 'port_spec' | 'free_text' | 'identifier' | 'json_object' | 'github_name'
   | 'github_repo_list'
 export type DenyReason =

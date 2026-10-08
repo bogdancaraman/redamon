@@ -400,8 +400,13 @@ TIGHTEN_DIRECTION: dict[str, str] = {
 # An absolute path a scan container opens. Validated against a root allowlist.
 PROJECT_FILE_FIELDS = {
     "ffufWordlist",
-    "vhostSniCustomWordlist",
     "nucleiCustomTemplates",
+}
+
+# Inline text, one hostname or prefix per line. Not a path despite the
+# "Wordlist" name: the vhost module parses the value itself and opens no file.
+HOSTNAME_LIST_FIELDS = {
+    "vhostSniCustomWordlist",
 }
 
 # A BASENAME the scan joins onto a mounted directory (`-t /custom-templates/<x>`).
@@ -1353,6 +1358,8 @@ def build() -> str:
             entry["validator"] = "project_file"
         elif name in PROJECT_FILE_NAME_FIELDS:
             entry["validator"] = "project_file_name"
+        elif name in HOSTNAME_LIST_FIELDS:
+            entry["validator"] = "hostname_list"
         elif name.endswith("DockerImage"):
             entry["validator"] = "docker_image"
         elif HEADER_FIELDS_RE.search(name):

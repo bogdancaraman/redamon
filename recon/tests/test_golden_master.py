@@ -178,9 +178,7 @@ def test_an_escaping_wordlist_path_is_dropped_to_the_shipped_default():
     """
     resolved = _baseline("escaping_wordlist")
     assert resolved["FFUF_WORDLIST"] == "/usr/share/seclists/Discovery/Web-Content/common.txt"
-    assert resolved["VHOST_SNI_CUSTOM_WORDLIST"] == ""
     assert "/etc/shadow" not in json.dumps(resolved)
-    assert "etc/passwd" not in json.dumps(resolved)
 
 
 def test_the_exclude_tag_merge_is_deterministic():

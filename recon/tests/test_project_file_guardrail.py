@@ -120,8 +120,23 @@ def test_an_empty_scalar_is_not_treated_as_an_escape():
     default would silently turn a deliberate opt-out into an opt-in.
     """
     settings = dict(DEFAULT_SETTINGS)
-    settings["VHOST_SNI_CUSTOM_WORDLIST"] = ""
-    assert sanitize_project_file_settings(settings)["VHOST_SNI_CUSTOM_WORDLIST"] == ""
+    settings["FFUF_WORDLIST"] = ""
+    assert sanitize_project_file_settings(settings)["FFUF_WORDLIST"] == ""
+
+
+def test_the_vhost_custom_wordlist_is_inline_text_not_a_path(capsys):
+    """
+    The vhost module parses this column's text itself and opens no file, so the
+    path check must not see it: it used to pin every pasted list to "" with a
+    [guardrail] line, and a custom wordlist never reached a scan.
+    """
+    assert "VHOST_SNI_CUSTOM_WORDLIST" not in PATH_KEYS
+    settings = dict(DEFAULT_SETTINGS)
+    settings["PROJECT_ID"] = "proj1"
+    settings["VHOST_SNI_CUSTOM_WORDLIST"] = "admin\nhidden.acme.com"
+    out = sanitize_project_file_settings(settings)
+    assert out["VHOST_SNI_CUSTOM_WORDLIST"] == "admin\nhidden.acme.com"
+    assert "[guardrail]" not in capsys.readouterr().out
 
 
 def test_a_list_drops_only_the_escaping_entries(capsys):

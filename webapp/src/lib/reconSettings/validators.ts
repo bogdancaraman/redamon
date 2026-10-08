@@ -166,6 +166,30 @@ export const REGEX_GITHUB_ORG = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/
 const GITHUB_REPO_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/
 
 /**
+ * One line of a pasted hostname list: a bare prefix (`admin`) or a full name.
+ * Each line becomes a Host header and an SNI name, so a path, a URL or a space
+ * can only produce a candidate no server would answer to.
+ */
+const HOSTNAME_LIST_LINE_RE = /^[A-Za-z0-9._-]{1,253}$/
+
+/** A 5,000-name list is ~50 KB; this leaves room without letting a row grow unbounded. */
+const HOSTNAME_LIST_MAX_CHARS = 1_000_000
+
+function checkHostnameList(value: unknown): string | null {
+  if (typeof value !== 'string') return 'must be a string'
+  if (value.length > HOSTNAME_LIST_MAX_CHARS) return `is longer than ${HOSTNAME_LIST_MAX_CHARS} characters`
+  const lines = value.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (line === '' || line.startsWith('#')) continue
+    if (!HOSTNAME_LIST_LINE_RE.test(line)) {
+      return `must be one hostname or prefix per line; line ${i + 1} (${JSON.stringify(line.slice(0, 80))}) is not one`
+    }
+  }
+  return null
+}
+
+/**
  * Container images the OPERATOR approved beyond the shipped set.
  *
  * Mirrors `_operator_allowed_images()` in `recon/project_settings.py`, which is
@@ -232,6 +256,8 @@ function checkScalar(validator: string, value: unknown, ctx: ValidationContext):
       return typeof value === 'string' && /^[A-Za-z0-9.*_-]{0,253}$/.test(value)
         ? null
         : 'must be a hostname'
+    case 'hostname_list':
+      return checkHostnameList(value)
     case 'url':
       return typeof value === 'string' && (value === '' || /^https?:\/\/[^\s]+$/.test(value))
         ? null

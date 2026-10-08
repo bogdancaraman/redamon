@@ -153,6 +153,7 @@
         "severity",
         "scan_modules",
         "hostname",
+        "hostname_list",
         "url",
         "port_spec",
         "free_text",

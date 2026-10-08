@@ -177,6 +177,5 @@ def cases() -> dict[str, dict]:
         "escaping_wordlist": {
             **_defaults_row(),
             "ffufWordlist": "/etc/shadow",
-            "vhostSniCustomWordlist": "../../etc/passwd",
         },
     }

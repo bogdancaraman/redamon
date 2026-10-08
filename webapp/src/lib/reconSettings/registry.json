@@ -13361,7 +13361,7 @@
    "group": "wordlist",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "Optional newline-separated custom prefixes/hostnames (per-project file/text). Bare prefixes expand as {prefix}.{target_apex}; full hostnames are used as-is. Default \"\".",
+   "meaning": "Optional custom candidates as inline text, one per line (not a file path); lines starting with # are ignored. Bare prefixes expand as {prefix}.{target_apex}; full hostnames are used as-is. Default \"\".",
    "optional": false,
    "phase": "http_probe",
    "prisma_type": "String",
@@ -13371,7 +13371,7 @@
    "traffic": "active",
    "type": "string",
    "unit": "none",
-   "validator": "project_file"
+   "validator": "hostname_list"
   },
   "vhostSniEnabled": {
    "default": false,
