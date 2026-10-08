@@ -55,7 +55,8 @@ def _inject_graph_fronted_hosts(by_url: dict, roots: list, user_id: str, project
                 OPTIONAL MATCH (s)-[:RESOLVES_TO]->(i:IP)
                 RETURN d.name AS root, s.name AS host,
                        head([x IN collect(DISTINCT e.favicon_hash) WHERE x IS NOT NULL]) AS favicon,
-                       head([x IN collect(DISTINCT e.cdn) WHERE x IS NOT NULL]) AS cdn,
+                       coalesce(head([x IN collect(DISTINCT e.cdn) WHERE x IS NOT NULL]),
+                                head([x IN collect(DISTINCT i.cdn_name) WHERE x IS NOT NULL])) AS cdn,
                        head(collect(DISTINCT i.address)) AS ip
                 """,
                 domains=roots, uid=user_id, pid=project_id,
@@ -163,6 +164,7 @@ def run_origin_discovery(config: dict) -> None:
         entry = recon_data["http_probe"]["by_url"].setdefault(url, {"url": url, "host": sub})
         entry["host"] = sub
         entry["is_cdn"] = True
+        entry["user_fronted"] = True
         if edge_ip and not entry.get("ip"):
             entry["ip"] = edge_ip
         print(f"[+][Partial Recon] Marked user subdomain as fronted: {sub}"
