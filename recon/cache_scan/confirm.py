@@ -67,6 +67,7 @@ _FIXED_PAYLOADS = {"scheme": "https", "port": "443", "ip": "127.0.0.1"}
 # "stable" a property of the URL (a 50/50 page passes 8 samples 1 time in 128), and
 # costs a handful of requests instead of two per vector.
 _PROFILE_SAMPLES = 8
+_FALLBACK_PROFILE_SAMPLES = 4
 
 # Fresh poisoned slots a behavioural change must reproduce on. A real poison is
 # deterministic; a random variant the poison request happened to draw repeats twice
@@ -283,6 +284,10 @@ def clean_profile(url: str, cb_param: str, session, timeout: int = 10,
                  for _ in range(max(2, samples))]
     except requests.RequestException:
         return None
+    # A rate limiter's 429 is not the page moving: leave it out of the profile.
+    resps = [r for r in resps if r.status_code != 429]
+    if len(resps) < 2:
+        return None
     ref = resps[0]
     unstable: set = set()
     for other in resps[1:]:
@@ -349,9 +354,12 @@ def confirm_vector(vector: dict, buster: dict, session: requests.Session,
         trusted: set = set()
         if differential_enabled:
             if baseline is None:
-                # The full profile, not two samples: a page alternating between two
-                # variants agrees with itself on two samples half the time.
-                baseline = clean_profile(url, cb_param, session, timeout, verify_ssl)
+                # Four samples, not two: a page alternating between two variants
+                # agrees with itself on two samples half the time, on four one in
+                # eight, and the control and reproductions below catch the rest.
+                # Not the full profile: this runs once per vector, up to 55 a URL.
+                baseline = clean_profile(url, cb_param, session, timeout, verify_ssl,
+                                         samples=_FALLBACK_PROFILE_SAMPLES)
             if baseline is not None:
                 base_ref = baseline["ref"]
                 trusted = set(baseline["trusted"])

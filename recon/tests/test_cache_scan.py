@@ -1572,7 +1572,7 @@ class TestFalsePositiveRegressions(unittest.TestCase):
     def test_page_drift_between_baseline_and_poison_is_not_poisoning(self):
         # The page drifts right after the vector's own baseline samples.
         rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"},
-                                     TimeDriftSession(flip_after=confirm._PROFILE_SAMPLES), {})
+                                     TimeDriftSession(flip_after=confirm._FALLBACK_PROFILE_SAMPLES), {})
         self.assertEqual(rec["differential_change"], "body")  # the drift looks like a change...
         self.assertEqual(rec["control_check"], "baseline_drift")  # ...a fresh clean slot shows too
         self.assertFalse(rec["persisted_on_clean"])
@@ -1596,7 +1596,7 @@ class TestFalsePositiveRegressions(unittest.TestCase):
     def test_one_off_origin_error_is_not_cpdos(self):
         # The glitch hits the render the poison triggers, right after the baseline.
         rec = confirm.confirm_vector(self._SCHEME, {"param": "rdmncb"},
-                                     FlakyPoisonSession(fail_on_render=confirm._PROFILE_SAMPLES + 1), {})
+                                     FlakyPoisonSession(fail_on_render=confirm._FALLBACK_PROFILE_SAMPLES + 1), {})
         self.assertEqual(rec["differential_change"], "status")
         self.assertEqual(rec["control_check"], "not_reproduced")
         self._assert_below_floor(rec)

@@ -4,7 +4,8 @@ A field report's cache rows (a third-party script loader alternating between
 two body variants) are covered by v6.25.1's 8-sample profile, control slot
 and reproductions. Three gaps remained and are pinned here:
 
-- a vector that had to sample its own baseline took only two samples;
+- a vector that had to sample its own baseline took only two samples, and
+  a rate-limited sample read as the page moving;
 - the deception probe called a page "personalised" on one signed-in /
   anonymous pair, which a two-variant public page passes half the time;
 - the per-URL record never said the page's own baseline was unstable
@@ -91,13 +92,27 @@ class PersonalisedLeakSession(TwoVariantPublicCacheSession):
         return FakeResponse(self.SENSITIVE if authed else self._render(), {"x-cache": "miss"})
 
 
-def test_vector_without_a_shared_profile_samples_the_full_profile():
+def test_vector_without_a_shared_profile_samples_more_than_two():
     sess = CountingSession()
     vector = {"url": "https://shop.test/a", "vector_type": "header", "vector_name": "X-Forwarded-Scheme",
               "payload_kind": "scheme", "impact_hint": "dos"}
     confirm.confirm_vector(vector, {"param": "rdmncb"}, sess, {})
-    # profile samples + poison + clean read on the poison slot
-    assert sess.calls >= confirm._PROFILE_SAMPLES + 2
+    # fallback samples + poison + clean read on the poison slot
+    assert sess.calls == confirm._FALLBACK_PROFILE_SAMPLES + 2
+    assert confirm._FALLBACK_PROFILE_SAMPLES > 2
+
+
+def test_rate_limited_profile_samples_are_not_the_page_moving():
+    class Limited(CountingSession):
+        def get(self, url, **kwargs):
+            self.calls += 1
+            if self.calls % 3 == 0:
+                return FakeResponse("<h1>Too Many Requests</h1>", status=429)
+            return FakeResponse("<html>same</html>", {"x-cache": "miss"})
+
+    prof = confirm.clean_profile("https://shop.test/a", "rdmncb", Limited())
+    assert prof["stable"] is True
+    assert prof["trusted"] == {"status", "location", "body"}
 
 
 def test_two_variant_public_page_is_not_deception():

@@ -69,10 +69,23 @@ def _hosts_answering_2xx(recon_data: dict) -> set[str]:
     return out
 
 
-def _is_active_resource(finding: dict) -> bool:
+def _is_active_resource(finding: dict, manual_review_auto_publish: bool = False) -> bool:
+    """A demoted CNAME candidate whose resource is proven live and claimed: the
+    CNAME target resolves, the host served a 2xx page, and a clean certificate
+    names the host. Some SaaS answer an unclaimed name with a 200 page, but
+    never with a valid certificate for the customer's name. DNS-level methods
+    (MX, SPF, TXT, NS) are about records, not the web page, and never drop."""
+    if manual_review_auto_publish:
+        return False
+    cert_clean = not (finding.get("cert_expired") or finding.get("cert_self_signed")
+                      or finding.get("cert_mismatched"))
     return (
         finding.get("verdict") == "manual_review"
+        and (finding.get("takeover_method") or "cname") == "cname"
+        and bool(finding.get("cname_target"))
+        and bool(finding.get("cname_alive"))
         and bool(finding.get("host_answers_2xx"))
+        and bool(finding.get("cert_name_match")) and cert_clean
         and not finding.get("cname_nxdomain")
         and not finding.get("cert_provider_default")
         and not finding.get("cert_absent")
@@ -422,15 +435,15 @@ def run_subdomain_takeover(
         # --------------------------------------------------------------
         # 6. Package results
         # --------------------------------------------------------------
-        # A demoted candidate whose host served a normal page, with nothing
-        # pointing at an unclaimed edge, is an active resource: kept in the
-        # scan output for audit, not written as a finding. A dangling record
-        # (NXDOMAIN, a provider default cert, no TLS at all) always stays.
-        active = [f for f in scored if _is_active_resource(f)]
+        # A demoted candidate proven live and claimed (see _is_active_resource)
+        # is kept in the scan output for audit, not written as a finding. A
+        # dangling record (NXDOMAIN, a provider default cert, no TLS at all)
+        # always stays.
+        active = [f for f in scored if _is_active_resource(f, manual_review_auto_publish)]
         if active:
             print(f"[*][Takeover] {len(active)} candidate(s) are active resources "
-                  f"(host served a 2xx page) -- not reported")
-        scored = [f for f in scored if not _is_active_resource(f)]
+                  f"(live CNAME, 2xx page, valid certificate for the host) -- not reported")
+        scored = [f for f in scored if not _is_active_resource(f, manual_review_auto_publish)]
 
         by_target: dict[str, list[dict]] = {}
         by_provider: dict[str, int] = {}

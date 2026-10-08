@@ -31,8 +31,15 @@ SETTINGS = {
 }
 
 
+def _cert(host, *, names_host=True):
+    """An http_probe certificate: the customer's own, or a SaaS default one."""
+    return {"subject_cn": host if names_host else "*.saas-default.test",
+            "san": [host] if names_host else ["*.saas-default.test"],
+            "issuer": ["Example CA"], "expired": False, "self_signed": False, "mismatched": False}
+
+
 def _run(monkeypatch, host, cname, *, subjack_service=None, nuclei_template=None,
-         status=None, resolves=True, nxdomain=False):
+         status=None, resolves=True, nxdomain=False, cert=None, **settings):
     monkeypatch.setattr(runner, "_run_subjack", lambda subdomains, work_dir, settings: (
         [{"subdomain": host, "vulnerable": True, "service": subjack_service}] if subjack_service else []))
     monkeypatch.setattr(runner, "_run_nuclei_takeover", lambda urls, work_dir, settings: (
@@ -43,12 +50,16 @@ def _run(monkeypatch, host, cname, *, subjack_service=None, nuclei_template=None
     monkeypatch.setattr(runner, "resolve_cname_target",
                         lambda c, timeout=3.0: {"resolves": resolves, "ips": ("203.0.113.5",) if resolves else (),
                                                 "nxdomain": nxdomain})
+    probe = {"status_code": status, "host": host}
+    if cert:
+        probe["tls"] = {"certificate": cert}
     recon = {
         "domain": "example.com",
         "dns": {"subdomains": {host: {"records": {"CNAME": f"{cname}."}}}},
-        "http_probe": {"by_url": {f"https://{host}": {"status_code": status, "host": host}}} if status else {},
+        "http_probe": {"by_url": {f"https://{host}": probe}} if status else {},
     }
-    out = runner.run_subdomain_takeover(recon, settings=dict(SETTINGS))
+    out = runner.run_subdomain_takeover(recon, settings={
+        **SETTINGS, "TAKEOVER_CERT_VALIDATION_ENABLED": bool(cert), **settings})
     return out["subdomain_takeover"]
 
 
@@ -94,18 +105,47 @@ class TestFieldReportCases:
 
     def test_live_akamai_service_is_an_active_resource_not_a_finding(self, monkeypatch):
         out = _run(monkeypatch, "www.example.com", "www.example.com.edgekey.net",
-                   subjack_service="akamai", nuclei_template="akamai-takeover", status=200)
+                   subjack_service="akamai", nuclei_template="akamai-takeover", status=200,
+                   cert=_cert("www.example.com"))
         assert out["findings"] == []
         assert [a["hostname"] for a in out["active_resources"]] == ["www.example.com"]
         assert out["summary"]["active_resources"] == 1
 
     def test_live_azure_app_service_is_an_active_resource(self, monkeypatch):
         out = _run(monkeypatch, "portal.example.com", "example-portal.azurewebsites.net",
-                   nuclei_template="azure-takeover-detection", status=200)
+                   subjack_service="azure", status=200, cert=_cert("portal.example.com"))
         assert out["findings"] == []
-        [a] = out["active_resources"]
-        # A generic azure template and an azurewebsites.net CNAME agree.
-        assert a["cname_provider"] is None
+        assert [a["hostname"] for a in out["active_resources"]] == ["portal.example.com"]
+
+    def test_a_live_page_without_a_certificate_for_the_host_stays_reported(self, monkeypatch):
+        # Some SaaS answer an unclaimed name with a 200 page, never with a
+        # valid certificate for the customer's name.
+        out = _run(monkeypatch, "book.example.com", "example.saas-default.test",
+                   nuclei_template="saas-takeover", status=200,
+                   cert=_cert("book.example.com", names_host=False))
+        assert [f["hostname"] for f in out["findings"]] == ["book.example.com"]
+        assert out["active_resources"] == []
+
+    def test_without_certificate_data_nothing_is_dropped(self, monkeypatch):
+        # Partial runs carry no certificate data and may carry a stale status.
+        out = _run(monkeypatch, "www.example.com", "www.example.com.edgekey.net",
+                   subjack_service="akamai", status=200)
+        assert len(out["findings"]) == 1
+        assert out["active_resources"] == []
+
+    def test_auto_publish_keeps_every_candidate(self, monkeypatch):
+        out = _run(monkeypatch, "www.example.com", "www.example.com.edgekey.net",
+                   subjack_service="akamai", status=200, cert=_cert("www.example.com"),
+                   TAKEOVER_MANUAL_REVIEW_AUTO_PUBLISH=True)
+        assert len(out["findings"]) == 1
+        assert out["findings"][0]["severity"] == "medium"
+
+    def test_dns_level_takeovers_are_never_active_resources(self):
+        # A dangling MX/SPF/TXT/NS record is about DNS, not the web page.
+        for method in ("mx", "spf", "txt", "ns", "dns"):
+            finding = {"verdict": "manual_review", "takeover_method": method, "cname_target": "x.test",
+                       "cname_alive": True, "host_answers_2xx": True, "cert_name_match": True}
+            assert runner._is_active_resource(finding) is False, method
 
     def test_live_auto_exploitable_provider_is_demoted_but_kept_when_tools_agree(self, monkeypatch):
         # Two tools on an auto-exploitable provider outweigh one 2xx: demoted,

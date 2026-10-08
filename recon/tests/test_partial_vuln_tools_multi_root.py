@@ -233,9 +233,9 @@ class TestOriginDiscoveryLiteralGroup:
         def rows(query):
             if "ci.is_cdn = true" in query:
                 return [
-                    {"root": "beta.test", "host": "cdn-x.beta.test", "favicon": None, "cdn": "c", "ip": "10.0.2.9"},
-                    {"root": "beta.test", "host": "www.beta.test", "favicon": None, "cdn": "c", "ip": "10.0.2.8"},
-                    {"root": "gamma.test", "host": "edge.gamma.test", "favicon": None, "cdn": "c", "ip": "10.0.3.9"},
+                    {"root": "beta.test", "host": "cdn-x.beta.test", "favicon": None, "cdns": ["c"], "ip": "10.0.2.9"},
+                    {"root": "beta.test", "host": "www.beta.test", "favicon": None, "cdns": ["c"], "ip": "10.0.2.8"},
+                    {"root": "gamma.test", "host": "edge.gamma.test", "favicon": None, "cdns": ["c"], "ip": "10.0.3.9"},
                 ]
             return []
 

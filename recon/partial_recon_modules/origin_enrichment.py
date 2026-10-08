@@ -24,6 +24,7 @@ from recon.partial_recon_modules.graph_builders import (
     _host_allowed,
     _root_scope,
 )
+from recon.main_recon_modules.origin_discovery import _is_edge_cdn_label
 
 
 def _inject_graph_fronted_hosts(by_url: dict, roots: list, user_id: str, project_id: str,
@@ -55,8 +56,8 @@ def _inject_graph_fronted_hosts(by_url: dict, roots: list, user_id: str, project
                 OPTIONAL MATCH (s)-[:RESOLVES_TO]->(i:IP)
                 RETURN d.name AS root, s.name AS host,
                        head([x IN collect(DISTINCT e.favicon_hash) WHERE x IS NOT NULL]) AS favicon,
-                       coalesce(head([x IN collect(DISTINCT e.cdn) WHERE x IS NOT NULL]),
-                                head([x IN collect(DISTINCT i.cdn_name) WHERE x IS NOT NULL])) AS cdn,
+                       [x IN collect(DISTINCT e.cdn) WHERE x IS NOT NULL]
+                         + [x IN collect(DISTINCT i.cdn_name) WHERE x IS NOT NULL] AS cdns,
                        head(collect(DISTINCT i.address)) AS ip
                 """,
                 domains=roots, uid=user_id, pid=project_id,
@@ -72,8 +73,11 @@ def _inject_graph_fronted_hosts(by_url: dict, roots: list, user_id: str, project
                 entry["is_cdn"] = True
                 if record["favicon"] is not None and entry.get("favicon_hash") in (None, ""):
                     entry["favicon_hash"] = record["favicon"]
-                if record["cdn"] and not entry.get("cdn"):
-                    entry["cdn"] = record["cdn"]
+                if record["cdns"] and not entry.get("cdn"):
+                    # Labels across scans and nodes come unordered: prefer an
+                    # edge CDN over a cloud-hosting label for the same host.
+                    edge = [c for c in record["cdns"] if _is_edge_cdn_label(c)]
+                    entry["cdn"] = (edge or record["cdns"])[0]
                 if record["ip"] and not entry.get("ip"):
                     entry["ip"] = record["ip"]
                 count += 1

@@ -382,8 +382,10 @@ def _port_open(ip: str, port: int, timeout: float) -> bool:
 
 # httpx's cdn labels that mean plain cloud hosting, where the IP serves the
 # application itself: no edge stands in front of it to bypass.
+# ("google" is not here: httpx's cdncheck files it under CDN, for Google's
+# load balancer and Cloud CDN edge.)
 _CLOUD_HOSTING_LABELS = frozenset({
-    "aws", "amazon", "azure", "gcp", "google", "google-cloud", "oracle", "oci",
+    "aws", "amazon", "azure", "gcp", "google-cloud", "oracle", "oci",
     "digitalocean", "linode", "alibaba", "aliyun", "ibm", "hetzner", "ovh", "vultr",
 })
 
@@ -430,15 +432,10 @@ def _select_fronted_hosts(combined_result: dict, ctx: _RunCtx) -> Dict[str, dict
         if edge_ip:
             entry["resolved_ips"].add(edge_ip)
     # current DNS resolution — a candidate equal to it is the edge, not a find.
-    # Every A record recon saw counts too: one resolver answer misses the other
-    # members of a round-robin or geo-DNS set.
-    dns_subs = ((combined_result.get("dns") or {}).get("subdomains") or {})
+    # Live resolution only: recorded DNS in a partial run comes from the graph,
+    # which keeps historical (pre-CDN) addresses, the very origins sought here.
     for host, entry in fronted.items():
         entry["resolved_ips"] |= _resolve_ips(host)
-        ips = ((dns_subs.get(host) or {}).get("ips") or {})
-        if isinstance(ips, dict):
-            for family in ("ipv4", "ipv6"):
-                entry["resolved_ips"] |= {ip for ip in (ips.get(family) or []) if isinstance(ip, str)}
     return fronted
 
 
@@ -1121,24 +1118,21 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optio
             resp = _fetch(url, host_header, ctx)
             # A 403 from the candidate is a deny wall: two identical "access
             # denied" pages say nothing about bypassing anything. Another 4xx
-            # (an API origin's 401/404 at /) can still confirm, but only on an
-            # exact certificate match below, never on its body.
+            # (an API origin's 401/404 at /) is scored like any page.
             if (resp is None or resp["status"] >= 500 or resp["status"] == 403
                     or _response_has_waf_headers(resp)):
                 continue
-            candidate_error = resp["status"] >= 400
             html_sim = _compare_html(reference["text"], resp["text"])
             hdr = 0.0 if resp["status"] >= 400 else _compare_headers(reference, resp)
             score = _overall_score(html_sim, cert, hdr, reference["status"], resp["status"]) * 100.0
             # F4: when the fronted host serves no comparable HTML (empty body / a
-            # JSON API, or the edge only shows us its deny page), the 60% HTML
-            # weight is unavailable and the score can't reach the threshold —
-            # but an exact TLS match (cert >= 0.5 = serial or CN+SAN) is a
-            # definitive same-server signal, so confirm on it.
-            no_reference_content = (not reference["text"]) or reference["status"] >= 400
-            cert_only = no_reference_content or candidate_error
-            cert_definitive = cert_only and port in _TLS_PORTS and cert >= 0.5
-            if cert_only and not cert_definitive:
+            # JSON API), the 60% HTML weight is unavailable and the score can't
+            # reach the threshold — but an exact TLS match (cert >= 0.5 = serial or
+            # CN+SAN) is a definitive same-server signal, so confirm on it. Two
+            # empty bodies compare as identical, so without that match there is
+            # nothing to confirm.
+            cert_definitive = (not reference["text"]) and port in _TLS_PORTS and cert >= 0.5
+            if not reference["text"] and not cert_definitive:
                 continue
             passed = score > ctx.threshold or cert_definitive
             eff_score = max(score, cert * 100.0) if cert_definitive else score
