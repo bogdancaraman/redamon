@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.26.2] - 2026-10-08
+
+### Fixed
+
+- **Recon false positives, from a field report of muted findings.** Each filter now drops the noise and keeps the real finding beside it; every case is a regression test and an end-to-end check in the new lab.
+  - **Vhost/SNI enumeration** no longer flags shared-CDN catch-all pages (Fastly-, Cloudflare- and Akamai-style edges, provider redirects). Candidates are calibrated against made-up control names, volatile tokens (request ids, cache nodes, epochs, Ray IDs, Akamai and Azure references) are normalised away, and a second probe drops only a candidate whose status changed or that now matches a control. A 429 is no data: a rate limiter is neither a vhost nor a reason to drop a real one.
+  - **DOM sinks** keep their severity only with a user-controlled source within 400 characters; otherwise they drop to low, or to info in library code. Constant arguments, the `Function("return this")` shim, comparisons and `"__proto__"` guards are not sinks, the evidence is the text around the sink, and on a minified line the finding points at the sink closest to its source.
+  - **JS secrets** must hold a credential: UI labels and identifiers are dropped, real passwords and random keys are kept, and debug flags, localhost and internal/staging URLs are info-level developer references instead of secrets.
+  - **Source maps** must parse as maps (an SPA shell answering `.map` is not one) and say whose code they hold: first-party sources are high, library-only maps low, a map behind a 403 or on an unreachable host is an info reference, and an inline `data:` map is stored as a short label.
+  - **Shodan passive CVEs** are graded. A version-matched banner CVE is a high candidate on its own port, a verified one is marked verified, a catalog-only CVE carries no severity, and shared CDN and cloud edges get none. A degraded run never overwrites better evidence, and the IP stays the finding's host.
+  - **Subdomain takeover** drops a candidate whose resource is live and claimed (its CNAME resolves, it served a 2xx and its certificate names the host); **origin discovery** needs a real edge and real content; **web cache poisoning** closes the gaps 6.25.1 left.
+- **Priority Board** (score model v3.4.0): lexical JS findings, developer references and passive CVEs never reach T1/T2 unproven, and catalog-only CVEs and developer references rank in T4.
+- **The vhost custom wordlist works.** It was declared a file path, so MCP refused every pasted list and the scan dropped whatever the form saved. It is now a hostname list, checked line by line.
+- **jQuery plugins are analysed.** JS recon skipped every `jquery[.-]` URL, so a hash-reading plugin never reached the sink detector. Only jQuery itself (core, slim, migrate, UI) is skipped now.
+- **An IP-mode target is no longer an external domain of itself** in the JS recon findings.
+- **The Priority Board names JS recon findings** (`innerHTML`, `Debug Flag`, ...) instead of showing their node id.
+
+### Added
+
+- **A false-positive regression lab**, `testing/guinea_pigs/fp_regression_target`: nine hosts on `192.88.94.0/24` acting as CDN edges, a rate limiter, a shared cache, a single-page app with source maps and a Shodan stub. `e2e_fp.py` drives a full IP-mode recon over MCP and `validate_e2e.py` asserts 35 cases on the graph.
+- `SHODAN_API_BASE` and `SHODAN_INTERNETDB_BASE` on the recon orchestrator, for the labs' Shodan stub only. Leave them unset in a real deployment: whatever they name receives the Shodan API key.
+
 ## [6.26.1] - 2026-10-08
 
 ### Fixed
