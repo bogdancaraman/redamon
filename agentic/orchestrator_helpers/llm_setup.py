@@ -44,6 +44,27 @@ def _anthropic_supports_temperature(model_id: str) -> bool:
     return not any(model_id.startswith(p) for p in ANTHROPIC_NO_TEMPERATURE_PREFIXES)
 
 
+# OpenAI reasoning families accept only the default temperature (1) and reject
+# 0 with HTTP 400 "Only the default (1) value is supported". Matched by prefix
+# so dated/variant ids (gpt-6-luna, o3-mini-2025-01-31) are covered. Like the
+# Anthropic list this is the fast path - the provider test endpoint calls
+# ainvoke() directly, without retry_llm_call's self-heal, so it needs it.
+OPENAI_NO_TEMPERATURE_PREFIXES = (
+    "o1", "o3", "o4",
+    "gpt-5", "gpt-6", "gpt-7",
+)
+# gpt-5-chat-* is the non-reasoning ChatGPT snapshot and still takes temperature.
+OPENAI_TEMPERATURE_EXCEPTIONS = ("gpt-5-chat",)
+
+
+def _openai_supports_temperature(model_id: str) -> bool:
+    # Custom/OpenRouter-style ids may carry a vendor prefix ("openai/gpt-6-luna").
+    name = model_id.rsplit("/", 1)[-1].lower()
+    if name.startswith(OPENAI_TEMPERATURE_EXCEPTIONS):
+        return True
+    return not name.startswith(OPENAI_NO_TEMPERATURE_PREFIXES)
+
+
 def _resolve_reasoning_effort(custom_llm_config: dict) -> str | None:
     """Return the OpenAI-compatible ``reasoning_effort`` value to send, if any.
 
@@ -193,12 +214,14 @@ def setup_llm(
             llm = ChatBedrockConverse(**bedrock_kwargs)
         else:
             # openai_compatible (default) — also handles openai/openrouter custom entries
+            oai_model = custom_llm_config.get("modelIdentifier", api_model)
             kwargs = dict(
-                model=custom_llm_config.get("modelIdentifier", api_model),
+                model=oai_model,
                 api_key=custom_llm_config.get("apiKey") or "ollama",
-                temperature=custom_llm_config.get("temperature", 0),
                 max_tokens=custom_llm_config.get("maxTokens", 16384),
             )
+            if _openai_supports_temperature(oai_model):
+                kwargs["temperature"] = custom_llm_config.get("temperature", 0)
             if ptype == "openai_compatible":
                 # Consume OpenAI-compatible responses as SSE while preserving
                 # the existing ainvoke() contract. Long-running cloud-backed
@@ -404,11 +427,10 @@ def setup_llm(
             raise ValueError(
                 f"OpenAI API key is required for model '{model_name}'"
             )
-        llm = ChatOpenAI(
-            model=api_model,
-            api_key=openai_api_key,
-            temperature=0,
-        )
+        oai_kwargs = dict(model=api_model, api_key=openai_api_key)
+        if _openai_supports_temperature(api_model):
+            oai_kwargs["temperature"] = 0
+        llm = ChatOpenAI(**oai_kwargs)
 
     logger.info(f"LLM provider: {provider}, model: {api_model}")
     return llm
