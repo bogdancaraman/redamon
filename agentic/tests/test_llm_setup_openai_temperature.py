@@ -1,9 +1,9 @@
 """setup_llm omits ``temperature`` for OpenAI reasoning model families.
 
 o-series / gpt-5+ reject temperature=0 with HTTP 400 ("Only the default (1)
-value is supported"). The provider test endpoint calls ``ainvoke`` directly,
-without ``retry_llm_call``'s self-heal, so the param must be dropped at
-construction. Construction makes no network call (fake keys).
+value is supported"). Several call sites run ``ainvoke`` without
+``retry_llm_call``'s self-heal, so the param must be dropped at construction.
+Construction makes no network call (fake keys).
 """
 
 from __future__ import annotations

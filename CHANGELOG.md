@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.26.1] - 2026-10-08
+
+### Fixed
+
+- **OpenAI reasoning models no longer get `temperature=0`.** o1, o3, o4, gpt-5 and gpt-6 models, also with a vendor prefix such as `openai/gpt-5`, accept only the default temperature, so Test Connection on a custom OpenAI-compatible provider failed with "Only the default (1) value is supported", and so did every call site that runs the model without the self-heal (CypherFix, the report summarizer, the `/llm/*` endpoints behind the recon AI hooks). These models are now built without a temperature, which also saves the rejected first request the agent loop made on every call before healing it. `gpt-5-chat` models keep temperature 0. Contributed by @binarytrails in #202.
+- **Test Connection now self-heals like the agent loop.** A model that rejects `temperature` or `reasoning_effort`, such as a DeepSeek or Kimi reasoning model behind a custom endpoint, is retried once without it instead of failing the test. Any other rejection still fails the test on the first answer.
+
 ## [6.26.0] - 2026-10-07
 
 ### Added

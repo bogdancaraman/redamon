@@ -48,11 +48,12 @@ def _anthropic_supports_temperature(model_id: str) -> bool:
 # OpenAI reasoning families accept only the default temperature (1) and reject
 # 0 with HTTP 400 "Only the default (1) value is supported". Matched by prefix
 # so dated/variant ids (gpt-6-luna, o3-mini-2025-01-31) are covered. Like the
-# Anthropic list this is the fast path - the provider test endpoint calls
-# ainvoke() directly, without retry_llm_call's self-heal, so it needs it.
+# Anthropic list this is the fast path: it saves the rejected first request,
+# and the call sites that run ainvoke() without retry_llm_call's self-heal
+# (CypherFix, the report summarizer, the /llm/* endpoints) depend on it.
 OPENAI_NO_TEMPERATURE_PREFIXES = (
     "o1", "o3", "o4",
-    "gpt-5", "gpt-6", "gpt-7",
+    "gpt-5", "gpt-6",
 )
 # gpt-5-chat-* is the non-reasoning ChatGPT snapshot and still takes temperature.
 OPENAI_TEMPERATURE_EXCEPTIONS = ("gpt-5-chat",)

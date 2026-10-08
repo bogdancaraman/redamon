@@ -2367,7 +2367,13 @@ async def test_llm_provider(body: LlmProviderTestRequest):
                 status_code=400,
             )
 
-        response = await llm.ainvoke([HumanMessage(content="Say hello in one sentence.")])
+        from orchestrator_helpers.llm_retry import retry_llm_call
+        # Same self-heal as the agent loop: a model that rejects `temperature` or
+        # `reasoning_effort` is retried once without it instead of failing the test.
+        response = await retry_llm_call(
+            llm, [HumanMessage(content="Say hello in one sentence.")],
+            label="provider-test", max_attempts=1,
+        )
         from orchestrator_helpers import normalize_content
         text = normalize_content(response.content).strip()
 

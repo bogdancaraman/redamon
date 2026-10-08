@@ -73,7 +73,10 @@ class SetupLlmTemperatureSmokeTests(unittest.TestCase):
 
     def test_openai_reasoning_model_omits_temperature(self):
         # o-series / gpt-5+ only accept the default (1); setup_llm drops the
-        # param at construction so paths without the self-heal (provider test
-        # endpoint) don't 400.
+        # param at construction so paths without the self-heal don't 400.
         llm = setup_llm("o3-mini", openai_api_key="fake-key-abc")
         self.assertIsNone(llm.temperature)
+
+
+if __name__ == "__main__":
+    unittest.main()

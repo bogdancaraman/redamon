@@ -1,0 +1,122 @@
+"""/llm-provider/test against a local OpenAI-compatible stub that rejects temperature.
+
+The two layers that keep Test Connection working for a model that rejects
+``temperature=0``: an OpenAI reasoning family is built without it (one request),
+and any other model is healed by ``retry_llm_call`` (a second request without
+it). The stub answers with each provider's error text as recorded in
+orchestrator_helpers/llm_retry.py. Assertions are on the requests the stub saw.
+
+Run with: python -m unittest tests.test_llm_provider_test_self_heal -v
+"""
+
+import json
+import sys
+import threading
+import unittest
+from contextlib import asynccontextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from unittest.mock import patch
+
+_AGENTIC_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_AGENTIC_DIR))
+
+_OPENAI_TEMPERATURE_ERROR = (
+    "Unsupported value: 'temperature' does not support 0 with this model. "
+    "Only the default (1) value is supported."
+)
+_REJECTIONS = {
+    "gpt-6-luna": _OPENAI_TEMPERATURE_ERROR,
+    "deepseek-reasoner": "deepseek-reasoner does not support the parameter `temperature`",
+    "kimi-k3": "invalid temperature: only 1 is allowed for this model.",
+}
+_ABSENT = "<absent>"
+
+
+class _StubHandler(BaseHTTPRequestHandler):
+    seen: list = []
+
+    def log_message(self, *args):
+        pass
+
+    def _reject(self, message):
+        raw = json.dumps({"error": {"message": message, "type": "invalid_request_error"}}).encode()
+        self.send_response(400)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        model = body["model"]
+        _StubHandler.seen.append(body.get("temperature", _ABSENT))
+        if model == "missing-model":
+            return self._reject("The model `missing-model` does not exist")
+        if model in _REJECTIONS and body.get("temperature", 1) != 1:
+            return self._reject(_REJECTIONS[model])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunk = {"id": "c", "object": "chat.completion.chunk", "created": 0, "model": model,
+                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hello."},
+                              "finish_reason": "stop"}]}
+        self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode())
+
+
+class ProviderTestSelfHealTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        @asynccontextmanager
+        async def fake_lifespan(_app):
+            yield
+
+        with patch("api.lifespan", fake_lifespan):
+            import api as api_module
+            from fastapi.testclient import TestClient
+            cls.client = TestClient(api_module.app)
+
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.base_url = f"http://127.0.0.1:{cls.server.server_address[1]}/v1"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        _StubHandler.seen = []
+
+    def _test_connection(self, model):
+        resp = self.client.post("/llm-provider/test", json={
+            "providerType": "openai_compatible",
+            "apiKey": "fake-key",
+            "baseUrl": self.base_url,
+            "modelIdentifier": model,
+        })
+        return resp.json()
+
+    def test_openai_reasoning_model_is_built_without_temperature(self):
+        self.assertTrue(self._test_connection("gpt-6-luna")["success"])
+        self.assertEqual(_StubHandler.seen, [_ABSENT])
+
+    def test_other_models_rejecting_temperature_are_healed(self):
+        for model in ("deepseek-reasoner", "kimi-k3"):
+            with self.subTest(model=model):
+                _StubHandler.seen = []
+                self.assertTrue(self._test_connection(model)["success"])
+                self.assertEqual(_StubHandler.seen, [0, _ABSENT])
+
+    def test_classic_model_keeps_temperature_zero(self):
+        self.assertTrue(self._test_connection("gpt-4o")["success"])
+        self.assertEqual(_StubHandler.seen, [0])
+
+    def test_unrelated_rejection_still_fails_without_retry(self):
+        data = self._test_connection("missing-model")
+        self.assertFalse(data["success"])
+        self.assertEqual(_StubHandler.seen, [0])
+
+
+if __name__ == "__main__":
+    unittest.main()
