@@ -33,7 +33,9 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, NamedTuple, Optional
+
+from recon.helpers.roe_scope import _is_roe_excluded
 
 
 # Marker that separates the response body from curl's --write-out metadata in
@@ -191,6 +193,7 @@ def run_vhost_sni_enrichment(
 
     from recon.helpers import circuit_breaker as _cb
     vhost_scope = _cb.scope((), label="VhostSni", unit="port(s)")
+    candidate_scope = _build_candidate_scope(combined_result, settings)
     print(f"[*][VhostSni] Probing {len(ip_port_map)} IP target(s) with concurrency={concurrency}")
     for ip, ports in ip_port_map.items():
         try:
@@ -207,6 +210,7 @@ def run_vhost_sni_enrichment(
                 concurrency=concurrency,
                 size_tolerance=size_tolerance,
                 max_candidates=max_candidates_per_ip,
+                scope=candidate_scope,
             )
         except Exception as e:
             print(f"[!][VhostSni] IP {ip} probing failed: {e}")
@@ -309,15 +313,29 @@ def _probe_single_ip(
     concurrency: int,
     size_tolerance: int,
     max_candidates: int,
+    scope: Optional["_CandidateScope"] = None,
 ) -> dict:
     """Run baseline + L7/L4 anomaly probes for one IP across all its ports."""
 
+    # Graph names must sit under a project root; the wordlist and the user's
+    # custom lines are deliberate, so only an RoE exclusion removes them.
+    out_of_scope_skipped = 0
+    if scope is not None:
+        in_scope = [h for h in graph_candidates if _candidate_in_scope(h, scope)]
+        out_of_scope_skipped = len(graph_candidates) - len(in_scope)
+        graph_candidates = in_scope
     candidate_set = _build_candidate_set(
         apex_domain=apex_domain,
         default_prefixes=default_prefixes,
         custom_lines=custom_lines,
         graph_candidates=graph_candidates,
     )
+    if scope is not None and scope.roe_excluded:
+        before = len(candidate_set)
+        candidate_set = {h for h in candidate_set if not _is_roe_excluded(h, list(scope.roe_excluded))}
+        out_of_scope_skipped += before - len(candidate_set)
+    if out_of_scope_skipped:
+        print(f"[*][VhostSni] IP {ip}: skipped {out_of_scope_skipped} candidate(s) outside the project scope")
     if len(candidate_set) > max_candidates:
         # Deterministic cap (sorted) so repeated runs hit the same set
         candidate_set = sorted(candidate_set)[:max_candidates]
@@ -329,6 +347,7 @@ def _probe_single_ip(
     anomalies: list[dict] = []
     is_permissive_frontend = False
     suppressed_by_control_total = 0
+    suppressed_unstable_total = 0
     suppressed_as_noise: list[str] = []
     dead_ports: list[str] = []
 
@@ -358,11 +377,12 @@ def _probe_single_ip(
         baselines[(port, scheme)] = baseline
 
         # Calibrate: send a few bogus-hostname probes to learn what the IP
-        # returns for any unknown vhost. Candidates whose response is byte-
-        # identical to these controls are the IP's default-unknown-vhost
-        # behavior, not a real hidden vhost (suppressed below).
+        # returns for any unknown vhost. Candidates whose response matches
+        # these controls are the IP's default-unknown-vhost behavior, not a
+        # real hidden vhost (suppressed below).
         l7_controls, l4_controls = _run_control_probes(
             scheme, ip, port, timeout, test_l7=test_l7, test_l4=test_l4,
+            apex_domain=apex_domain,
         )
         if l7_controls or l4_controls:
             print(
@@ -456,6 +476,7 @@ def _probe_single_ip(
                 "baseline_size": baseline["size"],
                 "observed_status": obs["status"],
                 "observed_size": obs["size"],
+                "observed_fingerprint": obs.get("canon_hash") or "",
                 "size_delta": obs["size"] - baseline["size"],
                 "severity": severity,
                 "internal_pattern_match": _matched_internal_keyword(hostname),
@@ -478,6 +499,17 @@ def _probe_single_ip(
                 f"{port_suppressed_by_control} candidate(s) matching control probes"
             )
         suppressed_by_control_total += port_suppressed_by_control
+
+        kept, unstable = _drop_unstable(
+            kept, per_candidate_results, l7_controls, l4_controls,
+            scheme=scheme, ip=ip, port=port, timeout=timeout, concurrency=concurrency,
+        )
+        if unstable:
+            print(
+                f"[*][VhostSni] IP {ip}:{port} ({scheme}) dropped {unstable} "
+                f"candidate(s) whose response changed or matched a control on a second probe"
+            )
+        suppressed_unstable_total += unstable
         anomalies.extend(kept)
 
     # Build the per-IP summary
@@ -495,6 +527,8 @@ def _probe_single_ip(
         "is_reverse_proxy": is_reverse_proxy,
         "is_permissive_frontend": is_permissive_frontend,
         "suppressed_by_control": suppressed_by_control_total,
+        "suppressed_unstable": suppressed_unstable_total,
+        "out_of_scope_skipped": out_of_scope_skipped,
         # A permissive frontend's anomalies are discarded as noise, not written
         # as findings; the count and a bounded sample keep that discard visible.
         "suppressed_as_noise": len(suppressed_as_noise),
@@ -547,11 +581,16 @@ def _curl_probe(
     sni_hostname, when set, swaps the URL hostname AND uses --resolve to pin DNS
     to target IP so the TLS handshake carries that name as SNI (L4 test).
 
-    body_hash is a SHA-1 over the response body (capped at 1 MiB), used by the
-    control-probe filter to distinguish "this hostname returns unique content"
-    from "the IP returns the same generic page for every unknown vhost".
+    body_hash is a SHA-1 over the raw response body (capped at 1 MiB).
+    canon_hash fingerprints the response with the probed hostname and
+    per-request tokens normalised away (see _canonical_fingerprint); the
+    control filter, the noisy-frontend guard and the severity rule compare it,
+    so a provider error page that echoes the hostname or a Ray ID still
+    matches the same page served for a random name.
     """
-    write_out = _PROBE_META_SENTINEL.decode("ascii") + "%{http_code} %{size_download}"
+    write_out = _PROBE_META_SENTINEL.decode("ascii") + "\t".join(
+        ("%{http_code}", "%{size_download}", "%{redirect_url}", "%{content_type}")
+    )
     if sni_hostname and scheme == "https":
         # L4 test: URL is the hostname, --resolve forces it to the IP
         url = f"{scheme}://{sni_hostname}:{port}/"
@@ -592,18 +631,19 @@ def _curl_probe(
         return None
 
     raw = proc.stdout or b""
-    if _PROBE_META_SENTINEL in raw:
+    has_meta = _PROBE_META_SENTINEL in raw
+    if has_meta:
         body, meta_bytes = raw.rsplit(_PROBE_META_SENTINEL, 1)
     else:
         body = b""
         meta_bytes = raw
 
     try:
-        meta = meta_bytes.decode("ascii", errors="replace").strip()
+        meta = meta_bytes.decode("ascii", errors="replace").strip("\r\n ")
     except Exception:
         return None
 
-    parts = meta.split()
+    parts = meta.split("\t") if "\t" in meta else meta.split()
     if len(parts) < 2:
         return None
     try:
@@ -611,13 +651,80 @@ def _curl_probe(
         size = int(parts[1])
     except ValueError:
         return None
+    redirect_url = parts[2].strip() if "\t" in meta and len(parts) > 2 else ""
+    content_type = parts[3].strip() if "\t" in meta and len(parts) > 3 else ""
 
     # Status 0 means curl could not connect at all -- treat as no data.
     if status == 0:
         return None
 
     body_hash = hashlib.sha1(body).hexdigest() if body else ""
-    return {"status": status, "size": size, "body_hash": body_hash}
+    # Without the sentinel the body is unknown, so there is nothing to
+    # fingerprint and the control filter must not suppress on it.
+    canon_hash = (
+        _canonical_fingerprint(
+            status, redirect_url, content_type, body,
+            [h for h in (host_header, sni_hostname) if h],
+        )
+        if has_meta else ""
+    )
+    return {"status": status, "size": size, "body_hash": body_hash, "canon_hash": canon_hash}
+
+
+# Per-request values that make one provider template hash differently on every
+# request: UUIDs, timestamps, Cloudflare Ray IDs and other hex request ids,
+# Akamai references, Fastly cache-node names, epoch numbers, and long
+# base64/ULID nonces. These rules only feed the "is this the same page as the
+# unknown-host page" comparison, never what is stored or shown, so erring
+# toward normalising is safe: a real hidden app differs in far more than ids.
+_VOLATILE_RULES: tuple[tuple[re.Pattern, bytes], ...] = (
+    (re.compile(rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I), b"{UUID}"),
+    (re.compile(rb"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}| UTC)?"), b"{TS}"),
+    (re.compile(rb"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT"), b"{TS}"),
+    (re.compile(rb"reference(?:\s|&#32;)*(?:#|&#35;)\s*[0-9a-z.&#;]+", re.I), b"reference #{REF}"),
+    (re.compile(rb"\bcache-[a-z0-9-]+-[A-Z]{3}\b"), b"{EDGE}"),
+    (re.compile(rb"(?<![\w+/=-])(?=[\w+/=-]*\d)[\w+/=-]{20,}"), b"{TOKEN}"),
+    (re.compile(rb"\b(?=[0-9a-f]*\d)[0-9a-f]{12,}(?:-[A-Z]{3})?\b", re.I), b"{HEX}"),
+    (re.compile(rb"\b\d{9,}\b"), b"{NUM}"),
+)
+
+
+def _replace_hostnames(data: bytes, hostnames: list[str]) -> bytes:
+    """Replace each probed hostname (plain or with HTML-entity dots) by {HOST}."""
+    for host in sorted({h.lower() for h in hostnames if h}, key=len, reverse=True):
+        for variant in (host, host.replace(".", "&#46;")):
+            data = re.sub(re.escape(variant.encode("ascii", "ignore")), b"{HOST}", data, flags=re.I)
+    return data
+
+
+def _canonical_fingerprint(
+    status: int,
+    redirect_url: str,
+    content_type: str,
+    body: bytes,
+    hostnames: list[str],
+) -> str:
+    """SHA-1 over status, redirect target, MIME type and body, each with the
+    probed hostname replaced by {HOST} and per-request tokens stripped.
+
+    A shared CDN answers every unknown name with one template that echoes the
+    name (Fastly) or carries a fresh Ray ID (Cloudflare); the raw bytes then
+    differ per probe while this fingerprint does not.
+    """
+    def canon(data: bytes) -> bytes:
+        data = _replace_hostnames(data.replace(b"\r\n", b"\n"), hostnames)
+        for pattern, replacement in _VOLATILE_RULES:
+            data = pattern.sub(replacement, data)
+        return data
+
+    mime = content_type.split(";", 1)[0].strip().lower()
+    parts = [
+        str(status).encode("ascii"),
+        canon(redirect_url.encode("utf-8", "ignore")),
+        mime.encode("ascii", "ignore"),
+        canon(body),
+    ]
+    return hashlib.sha1(b"\x00".join(parts)).hexdigest()
 
 
 def _is_anomaly(probe: dict, baseline: dict, size_tolerance: int) -> bool:
@@ -641,10 +748,24 @@ def _is_anomaly(probe: dict, baseline: dict, size_tolerance: int) -> bool:
 #
 # The fix is the same pattern wfuzz/ffuf use: send a few probes with random
 # bogus hostnames first and treat their response shape as the IP's
-# "unknown-vhost default". Any candidate whose response is byte-identical
-# (same status + same body hash) gets suppressed.
+# "unknown-vhost default". Any candidate with the same status and canonical
+# fingerprint (hostname and per-request tokens normalised) gets suppressed.
+#
+# Two of the three controls sit under the apex: a CDN that routes by zone
+# answers an unknown name inside a customer's zone differently from a name
+# under `.invalid`, and the wordlist candidates are all inside the zone.
 
 _CONTROL_PROBE_COUNT = 3
+_CONTROL_LABEL_PREFIX = "vhostsni-ctrl-"
+
+
+def _control_hostnames(apex_domain: Optional[str]) -> list[str]:
+    names = []
+    for i in range(_CONTROL_PROBE_COUNT):
+        label = f"{_CONTROL_LABEL_PREFIX}{uuid.uuid4().hex[:10]}-{i}"
+        in_zone = apex_domain and i < _CONTROL_PROBE_COUNT - 1
+        names.append(f"{label}.{apex_domain}" if in_zone else f"{label}.invalid")
+    return names
 
 
 def _run_control_probes(
@@ -655,14 +776,14 @@ def _run_control_probes(
     *,
     test_l7: bool,
     test_l4: bool,
+    apex_domain: Optional[str] = None,
 ) -> tuple[list[dict], list[dict]]:
     """Send `_CONTROL_PROBE_COUNT` probes with random bogus hostnames and
     return (l7_controls, l4_controls). Used to characterize what the IP
     returns for any unknown vhost so we can suppress matching candidates."""
     l7_controls: list[dict] = []
     l4_controls: list[dict] = []
-    for i in range(_CONTROL_PROBE_COUNT):
-        bogus = f"vhostsni-ctrl-{uuid.uuid4().hex[:10]}-{i}.invalid"
+    for bogus in _control_hostnames(apex_domain):
         if test_l7:
             r = _curl_probe(scheme, bogus, None, ip, port, timeout)
             if r:
@@ -676,20 +797,88 @@ def _run_control_probes(
 
 def _matches_any_control(probe: Optional[dict], controls: list[dict]) -> bool:
     """True iff the probe is indistinguishable from the IP's default
-    unknown-vhost behavior. Requires a body_hash on BOTH sides -- when one is
-    missing (mocked tests, zero-byte responses) we err on the side of NOT
-    suppressing so we never silently drop a real finding."""
+    unknown-vhost behavior: same status and same canonical fingerprint, or,
+    for a probe without one, the same raw body hash. A probe with neither
+    (curl output without the meta sentinel) is never suppressed, so a real
+    finding is never silently dropped on missing data."""
     if not probe or not controls:
         return False
+    probe_canon = probe.get("canon_hash")
     probe_hash = probe.get("body_hash")
-    if not probe_hash:
+    if not probe_canon and not probe_hash:
         return False
     for c in controls:
         if probe["status"] != c.get("status"):
             continue
-        if probe_hash == c.get("body_hash"):
+        if probe_canon and probe_canon == c.get("canon_hash"):
+            return True
+        if probe_hash and probe_hash == c.get("body_hash"):
             return True
     return False
+
+
+def _same_response(a: Optional[dict], b: Optional[dict]) -> bool:
+    """Same status and, when both carry one, the same canonical fingerprint;
+    without fingerprints, the same size."""
+    if not a or not b or a["status"] != b["status"]:
+        return False
+    if a.get("canon_hash") and b.get("canon_hash"):
+        return a["canon_hash"] == b["canon_hash"]
+    return a["size"] == b["size"]
+
+
+def _drop_unstable(
+    anomalies: list[dict],
+    first_results: dict[str, dict],
+    l7_controls: list[dict],
+    l4_controls: list[dict],
+    *,
+    scheme: str,
+    ip: str,
+    port: int,
+    timeout: int,
+    concurrency: int,
+) -> tuple[list[dict], int]:
+    """Probe each surviving candidate's firing layer(s) a second time and drop
+    it when the response changed or now matches a control: a transient answer
+    (rotating error page, rate-limit page, load-balancer flap) is not a vhost.
+
+    Only fingerprinted probes are re-checked; a probe without a canonical
+    fingerprint has nothing stable to compare. A failed re-probe keeps the
+    finding, since a timeout proves nothing either way.
+    """
+    jobs: list[tuple[int, str, dict]] = []
+    for idx, a in enumerate(anomalies):
+        layers = ("L7", "L4") if a["layer"] == "both" else (a["layer"],)
+        for layer in layers:
+            first = (first_results.get(a["hostname"]) or {}).get(layer)
+            if first and first.get("canon_hash"):
+                jobs.append((idx, layer, first))
+    if not jobs:
+        return anomalies, 0
+
+    unstable: set[int] = set()
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="vhostsni-re") as pool:
+        futures = {}
+        for idx, layer, first in jobs:
+            host = anomalies[idx]["hostname"]
+            sni = host if layer == "L4" else None
+            host_header = None if layer == "L4" else host
+            futures[pool.submit(_curl_probe, scheme, host_header, sni, ip, port, timeout)] = (idx, layer, first)
+        for fut in as_completed(futures):
+            idx, layer, first = futures[fut]
+            try:
+                again = fut.result()
+            except Exception:
+                again = None
+            if again is None:
+                continue
+            controls = l4_controls if layer == "L4" else l7_controls
+            if not _same_response(first, again) or _matches_any_control(again, controls):
+                unstable.add(idx)
+
+    kept = [a for i, a in enumerate(anomalies) if i not in unstable]
+    return kept, len(unstable)
 
 
 def _detect_noisy_frontend(
@@ -711,7 +900,12 @@ def _detect_noisy_frontend(
         return anomalies, False
     if len(anomalies) / candidates_count < fire_rate_threshold:
         return anomalies, False
-    buckets = Counter((a["observed_status"], a["observed_size"]) for a in anomalies)
+    # The canonical fingerprint, not the raw size: a template echoing the
+    # hostname has a different size for every hostname length.
+    buckets = Counter(
+        (a["observed_status"], a.get("observed_fingerprint") or a["observed_size"])
+        for a in anomalies
+    )
     top_two = sum(count for _, count in buckets.most_common(2))
     if top_two / len(anomalies) >= cluster_threshold:
         return [], True
@@ -727,16 +921,15 @@ def _classify_severity(
     l4_res: Optional[dict],
 ) -> str:
     """
-    high   -- L7 and L4 disagree on the same hostname (proxy bypass primitive)
+    high   -- L7 and L4 serve different pages for the same hostname (proxy
+              bypass primitive); a byte difference that normalises away (a
+              Ray ID, the echoed hostname) is the same page, not a bypass
     medium -- hidden vhost with hostname matching internal keyword pattern
     low    -- different status code (confirmed hidden vhost)
     info   -- different size only, status unchanged
     """
-    if layer == "both" and l7_res and l4_res:
-        if l7_res["status"] != l4_res["status"]:
-            return "high"
-        if abs(l7_res["size"] - l4_res["size"]) > 0:
-            return "high"
+    if layer == "both" and l7_res and l4_res and not _same_response(l7_res, l4_res):
+        return "high"
 
     if _matched_internal_keyword(hostname):
         return "medium"
@@ -774,6 +967,48 @@ def _matched_internal_keyword(hostname: str) -> Optional[str]:
 # =============================================================================
 # Candidate building
 # =============================================================================
+class _CandidateScope(NamedTuple):
+    """Which graph-derived hostnames may be tried as a vhost on a target IP.
+
+    The graph sources include every subdomain's CNAME target, PTR names and
+    certificate SANs, which name third parties (an identity provider's tenant
+    host, a CDN edge name, another customer on a shared certificate). Those
+    are not the target's vhosts, and on a shared CDN IP the probe reaches the
+    third party's service. ``roots`` empty (IP mode) disables the root check,
+    since an IP-mode project has no domain to compare against.
+    """
+    roots: tuple = ()
+    roe_excluded: tuple = ()
+
+
+def _build_candidate_scope(combined_result: dict, settings: dict) -> _CandidateScope:
+    metadata = combined_result.get("metadata") or {}
+    declared = combined_result.get("domains")
+    roots = [r for r in declared if isinstance(r, str) and r.strip()] if isinstance(declared, list) else []
+    if not roots:
+        apex = _detect_apex_domain(combined_result)
+        roots = [apex] if apex else []
+    roots = [r.strip().strip(".").lower() for r in roots]
+    if metadata.get("ip_mode") or any(r.startswith("ip-targets.") for r in roots):
+        roots = []
+    excluded = settings.get("ROE_EXCLUDED_HOSTS") if settings.get("ROE_ENABLED") else None
+    return _CandidateScope(
+        roots=tuple(roots),
+        roe_excluded=tuple(e for e in (excluded or []) if isinstance(e, str) and e.strip()),
+    )
+
+
+def _candidate_in_scope(hostname: str, scope: _CandidateScope) -> bool:
+    host = (hostname or "").strip().strip(".").lower()
+    if not host:
+        return False
+    if scope.roe_excluded and _is_roe_excluded(host, list(scope.roe_excluded)):
+        return False
+    if not scope.roots:
+        return True
+    return any(host == r or host.endswith(f".{r}") for r in scope.roots)
+
+
 def _build_candidate_set(
     apex_domain: Optional[str],
     default_prefixes: list[str],

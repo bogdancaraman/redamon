@@ -42,9 +42,10 @@ class _Probe:
             if self.baseline_calls == 1:
                 return dict(LIVE)
             return dict(LIVE) if self.revive else None
-        # Calibration probes use bogus "*.invalid" hostnames; keep them apart
-        # from the real wordlist candidates the streak logic counts.
-        if str(host_header or sni or "").endswith(".invalid"):
+        # Calibration probes use bogus "vhostsni-ctrl-*" hostnames (under the
+        # apex and under .invalid); keep them apart from the real wordlist
+        # candidates the streak logic counts.
+        if str(host_header or sni or "").startswith(v._CONTROL_LABEL_PREFIX):
             self.control_calls += 1
         else:
             self.candidate_calls += 1

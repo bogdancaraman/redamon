@@ -1,0 +1,516 @@
+"""False-positive regressions for the VHost & SNI enumerator.
+
+A field report muted ~2,200 vhost findings on shared CDN IPs. Every fixture
+here is a synthetic replica of one of those failure modes, driven through the
+REAL ``_curl_probe`` (only ``subprocess.run`` is faked), so the canonical
+fingerprint, the control filter, the stability re-probe and the scope filter
+are all exercised together:
+
+- a Fastly-style "unknown domain" page that echoes the probed hostname twice,
+  so its size is ``246 + 2 * len(hostname)`` and its raw hash differs per name;
+- a Cloudflare-style 403 that carries a fresh Ray ID on every request;
+- a provider redirect to ``https://<probed host>/`` with an empty body;
+- a third-party CNAME target (an identity-provider tenant) offered as a
+  candidate.
+
+Each negative has a positive twin that must still be reported: a hidden app
+whose content really differs from the unknown-host page.
+"""
+
+from __future__ import annotations
+
+import itertools
+import re
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from recon.main_recon_modules import vhost_sni_enum as vsm
+from recon.main_recon_modules.vhost_sni_enum import (
+    _PROBE_META_SENTINEL,
+    _CandidateScope,
+    _build_candidate_scope,
+    _canonical_fingerprint,
+    _candidate_in_scope,
+    _classify_severity,
+    _control_hostnames,
+    _curl_probe,
+    _detect_noisy_frontend,
+    _matches_any_control,
+    _same_response,
+    run_vhost_sni_enrichment,
+)
+
+IP = "203.0.113.10"
+APEX = "example.com"
+
+
+# ---------------------------------------------------------------------------
+# Fake curl: parses the command the real _curl_probe builds and answers with
+# body + sentinel + "status\tsize\tredirect\tcontent-type", exactly the shape
+# curl's --write-out produces.
+# ---------------------------------------------------------------------------
+def _proc(status: int, body: bytes = b"", redirect: str = "", ctype: str = "text/html; charset=utf-8"):
+    proc = MagicMock()
+    meta = f"{status}\t{len(body)}\t{redirect}\t{ctype}".encode()
+    proc.stdout = body + _PROBE_META_SENTINEL + meta
+    proc.stderr = b""
+    proc.returncode = 0
+    return proc
+
+
+def _probed_name(cmd: list[str]) -> tuple[str | None, str]:
+    """(hostname, layer) for a curl command; layer is baseline, L7 or L4."""
+    if "--resolve" in cmd:
+        return cmd[cmd.index("--resolve") + 1].split(":", 1)[0], "L4"
+    if "-H" in cmd:
+        return cmd[cmd.index("-H") + 1].split(":", 1)[1].strip(), "L7"
+    return None, "baseline"
+
+
+class FakeCurl:
+    """``responder(host, layer, attempt)`` -> proc. Records every probe."""
+
+    def __init__(self, responder):
+        self.responder = responder
+        self.calls: list[tuple[str | None, str]] = []
+        self._attempts: dict[tuple, int] = {}
+
+    def __call__(self, cmd, **kwargs):
+        host, layer = _probed_name(cmd)
+        self.calls.append((host, layer))
+        key = (host, layer)
+        self._attempts[key] = self._attempts.get(key, 0) + 1
+        return self.responder(host, layer, self._attempts[key])
+
+    def probed_hosts(self) -> set[str]:
+        return {h for h, _ in self.calls if h}
+
+
+_ray = itertools.count(0x8C1F2E3D4A5B6C00)
+
+
+def fastly_unknown_domain(host: str) -> bytes:
+    # 246 bytes of template + the hostname twice: the field report's arithmetic.
+    head = b"<html><body><h1>Fastly error: unknown domain: "
+    mid = b"</h1><p>Please check that this domain has been added to a service. Requested host: "
+    tail = b"</p><p>Details: cache-fra-etou8220036-FRA</p></body></html>"
+    pad = b" " * (246 - len(head) - len(mid) - len(tail))
+    return head + host.encode() + mid + host.encode() + tail + pad
+
+
+def cloudflare_block(host: str) -> bytes:
+    ray = f"{next(_ray):016x}"
+    return (
+        f"<html><head><title>Attention Required! | Cloudflare</title></head><body>"
+        f"<h1>Sorry, you have been blocked</h1><p>You are unable to access {host}</p>"
+        f"<span>Cloudflare Ray ID: <strong class=\"font-semibold\">{ray}</strong></span>"
+        f"<span>2026-10-06 12:{next(_ray) % 60:02d}:07 UTC</span></body></html>"
+    ).encode()
+
+
+ADMIN_APP = b'{"service":"admin-api","version":"3.2.1","endpoints":["/users","/audit"]}'
+
+
+def _settings(words, **extra):
+    s = {
+        "VHOST_SNI_ENABLED": True,
+        "VHOST_SNI_TEST_L7": True,
+        "VHOST_SNI_TEST_L4": True,
+        "VHOST_SNI_TIMEOUT": 1,
+        "VHOST_SNI_CONCURRENCY": 4,
+        "VHOST_SNI_BASELINE_SIZE_TOLERANCE": 50,
+        "VHOST_SNI_USE_DEFAULT_WORDLIST": False,
+        "VHOST_SNI_USE_GRAPH_CANDIDATES": False,
+        "VHOST_SNI_INJECT_DISCOVERED": False,
+        "VHOST_SNI_CUSTOM_WORDLIST": "\n".join(words),
+        "VHOST_SNI_MAX_CANDIDATES_PER_IP": 5000,
+    }
+    s.update(extra)
+    return s
+
+
+def _recon(**extra):
+    r = {
+        "domain": APEX,
+        "metadata": {"target": APEX},
+        "port_scan": {"by_host": {IP: {"ip": IP, "ports": [{"port": 443, "scheme": "https"}]}}},
+    }
+    r.update(extra)
+    return r
+
+
+# Names of every length the default wordlist spans, so a size-bucketed guard
+# would scatter them across many buckets.
+WORDS = [
+    "admin", "dev", "staging", "jenkins", "portal-internal", "qa", "grafana", "vpn",
+    "api-gateway", "kibana", "ci", "sso", "monitoring", "backoffice", "uat", "x1",
+    "preprod-eu-west", "status", "mail", "intranet",
+]
+
+
+def _run(responder, words=WORDS, recon=None, **settings):
+    fake = FakeCurl(responder)
+    cr = recon or _recon()
+    with patch.object(vsm, "_is_curl_available", return_value=True), \
+         patch("subprocess.run", side_effect=fake):
+        run_vhost_sni_enrichment(cr, settings=_settings(words, **settings))
+    return cr["vhost_sni"], fake
+
+
+# ===========================================================================
+# 1. Canonical fingerprint
+# ===========================================================================
+class TestCanonicalFingerprint:
+    def test_fastly_template_is_one_fingerprint_for_every_hostname(self):
+        hosts = ["admin.example.com", "a.example.com", "vhostsni-ctrl-0123456789-2.invalid"]
+        sizes = {len(fastly_unknown_domain(h)) for h in hosts}
+        assert len(sizes) == 3, "fixture must reproduce the per-hostname size drift"
+        fps = {
+            _canonical_fingerprint(500, "", "text/html", fastly_unknown_domain(h), [h]) for h in hosts
+        }
+        assert len(fps) == 1
+
+    def test_fastly_template_size_matches_the_field_arithmetic(self):
+        for h in ("admin.example.com", "preprod-eu-west.example.com"):
+            assert len(fastly_unknown_domain(h)) - 2 * len(h) == 246
+
+    def test_cloudflare_ray_id_and_timestamp_normalise_away(self):
+        a = cloudflare_block("admin.example.com")
+        b = cloudflare_block("admin.example.com")
+        assert a != b, "fixture must carry a per-request Ray ID"
+        assert _canonical_fingerprint(403, "", "text/html", a, ["admin.example.com"]) == \
+            _canonical_fingerprint(403, "", "text/html", b, ["admin.example.com"])
+
+    def test_redirect_to_the_probed_host_matches_across_hosts(self):
+        fa = _canonical_fingerprint(301, "https://admin.example.com/", "", b"", ["admin.example.com"])
+        fb = _canonical_fingerprint(301, "https://zz.example.com/", "", b"", ["zz.example.com"])
+        assert fa == fb
+
+    def test_redirect_to_a_distinct_path_stays_distinct(self):
+        fa = _canonical_fingerprint(302, "https://admin.example.com/login", "", b"", ["admin.example.com"])
+        fb = _canonical_fingerprint(302, "https://zz.example.com/", "", b"", ["zz.example.com"])
+        assert fa != fb
+
+    def test_hostname_match_is_case_insensitive_and_covers_entity_dots(self):
+        a = b"Unknown host ADMIN.EXAMPLE.COM (admin&#46;example&#46;com)"
+        b = b"Unknown host zz.example.com (zz&#46;example&#46;com)"
+        assert _canonical_fingerprint(404, "", "", a, ["admin.example.com"]) == \
+            _canonical_fingerprint(404, "", "", b, ["zz.example.com"])
+
+    def test_common_request_ids_normalise_away(self):
+        bodies = []
+        for i in range(2):
+            bodies.append((
+                f"Request ID: {i}f0e9d8c-1b2a-4c3d-8e9f-0a1b2c3d4e5f "
+                f"Reference #18.{i}a2b3c4d.172838888{i}.1a2b3c{i} "
+                f"XID: 98765432{i} cf-ray {i}a1b2c3d4e5f60718-FRA "
+                f"cloudfront: Hd8kQ{i}xYzAbCdEfGhIjKlMnOpQrStUvWxYz012345=="
+            ).encode())
+        assert _canonical_fingerprint(503, "", "", bodies[0], []) == \
+            _canonical_fingerprint(503, "", "", bodies[1], [])
+
+    def test_distinct_application_content_stays_distinct(self):
+        err = fastly_unknown_domain("admin.example.com")
+        assert _canonical_fingerprint(200, "", "application/json", ADMIN_APP, ["admin.example.com"]) != \
+            _canonical_fingerprint(500, "", "text/html", err, ["admin.example.com"])
+
+    def test_status_and_mime_are_part_of_the_fingerprint(self):
+        body = b"<h1>Not found</h1>"
+        assert _canonical_fingerprint(404, "", "text/html", body, []) != \
+            _canonical_fingerprint(410, "", "text/html", body, [])
+        assert _canonical_fingerprint(404, "", "text/html", body, []) != \
+            _canonical_fingerprint(404, "", "application/json", body, [])
+
+    def test_charset_parameter_is_ignored(self):
+        body = b"<h1>Not found</h1>"
+        assert _canonical_fingerprint(404, "", "text/html; charset=utf-8", body, []) == \
+            _canonical_fingerprint(404, "", "TEXT/HTML", body, [])
+
+
+# ===========================================================================
+# 2. _curl_probe output parsing
+# ===========================================================================
+class TestCurlProbeParsing:
+    def test_write_out_asks_for_redirect_and_content_type(self):
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            return _proc(200, b"x")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _curl_probe("https", "admin.example.com", None, IP, 443, 1)
+        fmt = captured["cmd"][captured["cmd"].index("-w") + 1]
+        assert fmt.endswith("%{http_code}\t%{size_download}\t%{redirect_url}\t%{content_type}")
+
+    def test_fingerprint_uses_the_probed_hostname(self):
+        with patch("subprocess.run", return_value=_proc(500, fastly_unknown_domain("admin.example.com"))):
+            a = _curl_probe("https", "admin.example.com", None, IP, 443, 1)
+        with patch("subprocess.run", return_value=_proc(500, fastly_unknown_domain("zz.example.com"))):
+            b = _curl_probe("https", None, "zz.example.com", IP, 443, 1)
+        assert a["body_hash"] != b["body_hash"]
+        assert a["canon_hash"] and a["canon_hash"] == b["canon_hash"]
+
+    def test_redirect_and_content_type_are_parsed(self):
+        with patch("subprocess.run", return_value=_proc(301, b"", "https://admin.example.com/", "")):
+            r = _curl_probe("https", "admin.example.com", None, IP, 443, 1)
+        assert r["status"] == 301 and r["size"] == 0
+        with patch("subprocess.run", return_value=_proc(301, b"", "https://zz.example.com/", "")):
+            z = _curl_probe("https", "zz.example.com", None, IP, 443, 1)
+        assert r["canon_hash"] == z["canon_hash"]
+
+    def test_legacy_space_separated_meta_still_parses_without_fingerprint(self):
+        proc = MagicMock(stdout=b"200 4823", stderr=b"", returncode=0)
+        with patch("subprocess.run", return_value=proc):
+            r = _curl_probe("https", None, None, IP, 443, 1)
+        assert (r["status"], r["size"], r["canon_hash"]) == (200, 4823, "")
+
+
+# ===========================================================================
+# 3. Control names, matching, stability helpers, severity
+# ===========================================================================
+class TestControlsAndMatching:
+    def test_two_controls_sit_under_the_apex_and_one_under_invalid(self):
+        names = _control_hostnames(APEX)
+        assert len(names) == 3
+        assert sum(n.endswith(f".{APEX}") for n in names) == 2
+        assert sum(n.endswith(".invalid") for n in names) == 1
+        assert all(n.startswith(vsm._CONTROL_LABEL_PREFIX) for n in names)
+        assert len(set(names)) == 3
+
+    def test_without_an_apex_every_control_is_invalid(self):
+        assert all(n.endswith(".invalid") for n in _control_hostnames(None))
+
+    def test_canonical_match_suppresses_despite_different_raw_hash(self):
+        probe = {"status": 500, "size": 280, "body_hash": "a", "canon_hash": "same"}
+        ctrls = [{"status": 500, "size": 314, "body_hash": "b", "canon_hash": "same"}]
+        assert _matches_any_control(probe, ctrls) is True
+
+    def test_canonical_match_still_requires_the_same_status(self):
+        probe = {"status": 200, "size": 280, "body_hash": "a", "canon_hash": "same"}
+        ctrls = [{"status": 500, "size": 280, "body_hash": "a", "canon_hash": "same"}]
+        assert _matches_any_control(probe, ctrls) is False
+
+    def test_empty_body_redirects_match_on_fingerprint(self):
+        probe = {"status": 301, "size": 0, "body_hash": "", "canon_hash": "redir"}
+        ctrls = [{"status": 301, "size": 0, "body_hash": "", "canon_hash": "redir"}]
+        assert _matches_any_control(probe, ctrls) is True
+
+    def test_same_response_prefers_fingerprint_over_size(self):
+        assert _same_response(
+            {"status": 200, "size": 100, "canon_hash": "x"},
+            {"status": 200, "size": 116, "canon_hash": "x"},
+        )
+        assert not _same_response(
+            {"status": 200, "size": 100, "canon_hash": "x"},
+            {"status": 200, "size": 100, "canon_hash": "y"},
+        )
+
+    def test_l7_l4_differing_only_by_normalised_bytes_is_not_high(self):
+        l7 = {"status": 200, "size": 5400, "canon_hash": "app"}
+        l4 = {"status": 200, "size": 5401, "canon_hash": "app"}
+        sev = _classify_severity("blog.example.com", "both", {"status": 421, "size": 291}, l4, l7, l4)
+        assert sev == "low"
+
+    def test_l7_l4_serving_different_pages_is_still_high(self):
+        l7 = {"status": 200, "size": 5400, "canon_hash": "public"}
+        l4 = {"status": 200, "size": 5400, "canon_hash": "internal"}
+        sev = _classify_severity("blog.example.com", "both", {"status": 421, "size": 291}, l4, l7, l4)
+        assert sev == "high"
+
+    def test_noisy_frontend_buckets_on_fingerprint_not_size(self):
+        anomalies = [
+            {"observed_status": 500, "observed_size": 246 + 2 * n, "observed_fingerprint": "tpl"}
+            for n in range(8, 28)
+        ]
+        kept, noisy = _detect_noisy_frontend(anomalies, candidates_count=20)
+        assert noisy is True and kept == []
+
+
+# ===========================================================================
+# 4. End-to-end: the field report's failure modes, through the real probe
+# ===========================================================================
+class TestFastlySharedEdge:
+    @staticmethod
+    def responder(host, layer, attempt):
+        if layer == "baseline":
+            return _proc(421, b"<h1>Misdirected Request</h1>" + b" " * 263)
+        return _proc(500, fastly_unknown_domain(host))
+
+    def test_no_finding_for_any_wordlist_name(self):
+        out, fake = _run(self.responder)
+        assert out["findings"] == []
+        ip = out["by_ip"][IP]
+        assert ip["suppressed_by_control"] == len(WORDS)
+        # Every candidate was really probed: suppression, not a skipped scan.
+        assert {f"{w}.{APEX}" for w in WORDS} <= fake.probed_hosts()
+
+    def test_a_real_hidden_app_on_the_same_edge_is_still_reported(self):
+        def responder(host, layer, attempt):
+            if host == f"admin.{APEX}" and layer != "baseline":
+                return _proc(200, ADMIN_APP, ctype="application/json")
+            return self.responder(host, layer, attempt)
+
+        out, _ = _run(responder)
+        assert [f["hostname"] for f in out["findings"]] == [f"admin.{APEX}"]
+        f = out["findings"][0]
+        assert f["layer"] == "both"
+        assert f["severity"] == "medium"  # internal keyword, same page on L7 and L4
+        assert out["by_ip"][IP]["suppressed_by_control"] == len(WORDS) - 1
+
+
+class TestCloudflareBlockPage:
+    @staticmethod
+    def responder(host, layer, attempt):
+        if layer == "baseline":
+            return _proc(400, b"<h1>400 Bad Request</h1><p>Plain HTTP request sent to HTTPS port</p>")
+        return _proc(403, cloudflare_block(host))
+
+    def test_fresh_ray_ids_do_not_turn_every_name_into_a_vhost(self):
+        out, _ = _run(self.responder)
+        assert out["findings"] == []
+        assert out["summary"]["high_severity"] == 0
+        # The control filter, not the re-probe, must be what recognises the
+        # block page; the re-probe is a second line of defence.
+        assert out["by_ip"][IP]["suppressed_by_control"] == len(WORDS)
+        assert out["by_ip"][IP]["suppressed_unstable"] == 0
+
+    def test_controls_failing_still_leaves_the_noisy_guard(self):
+        # Controls time out (status 0), so only the noisy-frontend guard
+        # stands between the run and 20 findings; it must bucket by
+        # fingerprint, because every echoed hostname has its own length.
+        def responder(host, layer, attempt):
+            if host and host.startswith(vsm._CONTROL_LABEL_PREFIX):
+                return _proc(0)
+            return self.responder(host, layer, attempt)
+
+        out, _ = _run(responder)
+        assert out["findings"] == []
+        assert out["by_ip"][IP]["is_permissive_frontend"] is True
+
+
+class TestProviderRedirect:
+    def test_redirect_to_the_probed_host_is_the_default_route(self):
+        def responder(host, layer, attempt):
+            if layer == "baseline":
+                return _proc(404, b"")
+            return _proc(301, b"", f"https://{host}/", "")
+
+        out, _ = _run(responder)
+        assert out["findings"] == []
+
+
+class TestStabilityReprobe:
+    def test_a_one_off_distinct_answer_is_dropped(self):
+        # First probe of `status` hits a different backend; the second probe
+        # gets the provider page every other name gets.
+        def responder(host, layer, attempt):
+            if layer == "baseline":
+                return _proc(421, b"<h1>Misdirected Request</h1>")
+            if host == f"status.{APEX}" and attempt == 1:
+                return _proc(200, b"<html><title>Status</title>all systems operational</html>")
+            return _proc(500, fastly_unknown_domain(host))
+
+        out, fake = _run(responder)
+        assert out["findings"] == []
+        assert out["by_ip"][IP]["suppressed_unstable"] == 1
+        assert sum(1 for h, l in fake.calls if h == f"status.{APEX}") == 4  # L7+L4, twice
+
+    def test_a_stable_hidden_app_survives_the_reprobe(self):
+        def responder(host, layer, attempt):
+            if layer == "baseline":
+                return _proc(421, b"<h1>Misdirected Request</h1>")
+            if host == f"status.{APEX}":
+                return _proc(200, f"<html><title>Status</title>req {next(_ray):016x}</html>".encode())
+            return _proc(500, fastly_unknown_domain(host))
+
+        out, _ = _run(responder)
+        assert [f["hostname"] for f in out["findings"]] == [f"status.{APEX}"]
+        assert out["by_ip"][IP]["suppressed_unstable"] == 0
+        assert out["findings"][0]["severity"] == "low"  # same page on both layers
+
+
+# ===========================================================================
+# 5. Scope: third-party graph names are never probed
+# ===========================================================================
+class TestCandidateScope:
+    def _graph_recon(self, **extra):
+        return _recon(
+            dns={"subdomains": {
+                f"login.{APEX}": {
+                    "ips": {"ipv4": [IP], "ipv6": []},
+                    "records": {"CNAME": ["example-tenant.idp-provider.test."]},
+                },
+            }},
+            ip_recon={IP: {"reverse_dns": "edge-203-0-113-10.cdn-provider.test"}},
+            **extra,
+        )
+
+    @staticmethod
+    def responder(host, layer, attempt):
+        if layer == "baseline":
+            return _proc(404, b"<h1>no route</h1>")
+        return _proc(404, b"<h1>no route</h1>")
+
+    def test_third_party_cname_and_ptr_names_are_not_probed(self):
+        out, fake = _run(self.responder, words=["admin"], recon=self._graph_recon(),
+                         VHOST_SNI_USE_GRAPH_CANDIDATES=True)
+        probed = fake.probed_hosts()
+        assert "example-tenant.idp-provider.test" not in probed
+        assert "edge-203-0-113-10.cdn-provider.test" not in probed
+        assert f"login.{APEX}" in probed
+        assert out["by_ip"][IP]["out_of_scope_skipped"] == 2
+
+    def test_ip_mode_keeps_ptr_names(self):
+        recon = self._graph_recon()
+        recon["domain"] = "ip-targets.proj1"
+        recon["metadata"] = {"target": "ip-targets.proj1", "ip_mode": True}
+        out, fake = _run(self.responder, words=[], recon=recon, VHOST_SNI_USE_GRAPH_CANDIDATES=True)
+        assert "edge-203-0-113-10.cdn-provider.test" in fake.probed_hosts()
+        assert out["by_ip"][IP]["out_of_scope_skipped"] == 0
+
+    def test_roe_exclusion_removes_even_a_wordlist_name(self):
+        out, fake = _run(self.responder, words=["admin", "payments"],
+                         ROE_ENABLED=True, ROE_EXCLUDED_HOSTS=[f"payments.{APEX}"])
+        assert f"payments.{APEX}" not in fake.probed_hosts()
+        assert f"admin.{APEX}" in fake.probed_hosts()
+        assert out["by_ip"][IP]["out_of_scope_skipped"] == 1
+
+    def test_roe_is_ignored_when_roe_is_off(self):
+        _, fake = _run(self.responder, words=["payments"],
+                       ROE_ENABLED=False, ROE_EXCLUDED_HOSTS=[f"payments.{APEX}"])
+        assert f"payments.{APEX}" in fake.probed_hosts()
+
+    def test_multi_root_scope(self):
+        scope = _build_candidate_scope({"domains": ["example.com", "Example.org."]}, {})
+        assert scope.roots == ("example.com", "example.org")
+        assert _candidate_in_scope("a.example.org", scope)
+        assert _candidate_in_scope("example.com", scope)
+        assert not _candidate_in_scope("example.com.attacker.test", scope)
+        assert not _candidate_in_scope("notexample.com", scope)
+
+    def test_scope_without_roots_admits_everything_but_roe(self):
+        scope = _CandidateScope(roots=(), roe_excluded=("blocked.test",))
+        assert _candidate_in_scope("anything.test", scope)
+        assert not _candidate_in_scope("blocked.test", scope)
+
+
+# ===========================================================================
+# 6. The probe sends no request to a name it did not need to
+# ===========================================================================
+def test_controls_use_the_apex_so_a_zone_routed_cdn_is_calibrated():
+    seen = []
+
+    def responder(host, layer, attempt):
+        seen.append(host)
+        return _proc(404, b"x")
+
+    _run(responder, words=["admin"])
+    ctrl = [h for h in seen if h and h.startswith(vsm._CONTROL_LABEL_PREFIX)]
+    assert any(re.fullmatch(rf"{vsm._CONTROL_LABEL_PREFIX}[0-9a-f]{{10}}-\d\.{re.escape(APEX)}", h) for h in ctrl)
+    assert any(h.endswith(".invalid") for h in ctrl)
