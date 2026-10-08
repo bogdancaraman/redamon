@@ -51,9 +51,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# The two overrides exist for the guinea-pig labs, which stand a stub API in for
-# Shodan (testing/guinea_pigs/fp_regression_target). Unset in any real deployment;
-# whatever they name receives the Shodan API key.
+# The two overrides let a test lab stand a stub API in for Shodan. Unset in any
+# real deployment: whatever they name receives the Shodan API key.
 SHODAN_API_BASE = os.environ.get("SHODAN_API_BASE") or "https://api.shodan.io"
 INTERNETDB_BASE = os.environ.get("SHODAN_INTERNETDB_BASE") or "https://internetdb.shodan.io"
 

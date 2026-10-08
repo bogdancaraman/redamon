@@ -124,7 +124,7 @@ class TestCircuitBreakerSwitchForwarding(unittest.TestCase):
 
 
 class TestShodanLabOverrideForwarding(unittest.TestCase):
-    """The guinea-pig labs' Shodan stub reaches both spawns, and a deployment
+    """A test lab's Shodan stub reaches both spawns, and a deployment
     that never set it spawns recon exactly as before: whatever the override
     names receives the Shodan API key."""
 

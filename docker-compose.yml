@@ -561,7 +561,7 @@ services:
       # every item again. Coverage recording and the prune guard stay on. Apply
       # with `docker compose up -d recon-orchestrator`; takes effect next scan.
       RECON_CIRCUIT_BREAKERS: ${RECON_CIRCUIT_BREAKERS:-on}
-      # Guinea-pig labs only: point Shodan / InternetDB at a stub API. Leave unset.
+      # Test labs only: point Shodan / InternetDB at a stub API. Leave unset.
       SHODAN_API_BASE: ${SHODAN_API_BASE:-}
       SHODAN_INTERNETDB_BASE: ${SHODAN_INTERNETDB_BASE:-}
       # Scan Timeline — Scan Scheduler worker (plan Section 7.2). It ticks here

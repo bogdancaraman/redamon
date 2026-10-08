@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Recon false positives, from a field report of muted findings.** Each filter now drops the noise and keeps the real finding beside it; every case is a regression test and an end-to-end check in the new lab.
+- **Recon false positives, from a field report of muted findings.** Each filter now drops the noise and keeps the real finding beside it; every case is a regression test and was checked end to end against a real recon run.
   - **Vhost/SNI enumeration** no longer flags shared-CDN catch-all pages (Fastly-, Cloudflare- and Akamai-style edges, provider redirects). Candidates are calibrated against made-up control names, volatile tokens (request ids, cache nodes, epochs, Ray IDs, Akamai and Azure references) are normalised away, and a second probe drops only a candidate whose status changed or that now matches a control. A 429 is no data: a rate limiter is neither a vhost nor a reason to drop a real one.
   - **DOM sinks** keep their severity only with a user-controlled source within 400 characters; otherwise they drop to low, or to info in library code. Constant arguments, the `Function("return this")` shim, comparisons and `"__proto__"` guards are not sinks, the evidence is the text around the sink, and on a minified line the finding points at the sink closest to its source.
   - **JS secrets** must hold a credential: UI labels and identifiers are dropped, real passwords and random keys are kept, and debug flags, localhost and internal/staging URLs are info-level developer references instead of secrets.
@@ -24,8 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **A false-positive regression lab**, `testing/guinea_pigs/fp_regression_target`: nine hosts on `192.88.94.0/24` acting as CDN edges, a rate limiter, a shared cache, a single-page app with source maps and a Shodan stub. `e2e_fp.py` drives a full IP-mode recon over MCP and `validate_e2e.py` asserts 35 cases on the graph.
-- `SHODAN_API_BASE` and `SHODAN_INTERNETDB_BASE` on the recon orchestrator, for the labs' Shodan stub only. Leave them unset in a real deployment: whatever they name receives the Shodan API key.
+- `SHODAN_API_BASE` and `SHODAN_INTERNETDB_BASE` on the recon orchestrator, to point Shodan lookups at a stub API in a test lab. Leave them unset in a real deployment: whatever they name receives the Shodan API key.
 
 ## [6.26.1] - 2026-10-08
 

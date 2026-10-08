@@ -942,7 +942,7 @@ class TestShodanCircuitBreaker(unittest.TestCase):
 
 
 class TestApiBaseOverride(unittest.TestCase):
-    """The guinea-pig labs point the module at a stub; unset, it is Shodan."""
+    """A test lab points the module at a stub; unset, it is Shodan."""
 
     def _load(self, env):
         import importlib.util
