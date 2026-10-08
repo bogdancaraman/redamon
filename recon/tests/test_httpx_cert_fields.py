@@ -9,7 +9,7 @@ surrogate cert_key for a certificate whose real fingerprint was in the same
 payload (so :443 and :993 never converged on one Certificate node).
 
 The payloads below keep the exact field NAMES of a real httpx v1.11.0 record
-captured against the tls_target lab; that naming is the whole contract.
+captured against a TLS lab; that naming is the whole contract.
 """
 
 import json

@@ -5,7 +5,7 @@ stores `[redacted:<digest>]` rather than the credential. _apply_header_mutations
 layers origin headers OVER the profile so the origin's own auth wins, which is
 right for a real stored value and wrong for the mask: replaying any captured
 authenticated request sent the placeholder and came back logged out. Verified
-live against the auth_target guinea pig, which answered 302 before this and 200
+live against a cookie-login lab, which answered 302 before this and 200
 with AUTHONLY-DASHBOARD after.
 
 The swap the layering exists for (IDOR/BOLA: drop the Cookie, or replace it)

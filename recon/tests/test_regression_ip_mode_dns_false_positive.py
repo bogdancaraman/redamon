@@ -1,7 +1,7 @@
 """An IP-mode scan must not run SPF/DMARC/DNSSEC checks on its synthetic root.
 
 Found by the fix-regression end-to-end run (testing/guinea_pigs/
-fix_regression_target): an IP-mode project produced a `dmarc_missing` finding
+recon fix-regression lab): an IP-mode project produced a `dmarc_missing` finding
 with no domain, IP or host. IP mode names its scan "ip-targets.<project_id>",
 a name in no DNS zone, so the DMARC lookup returned nothing and the check
 reported the record "missing" for a domain that does not exist.

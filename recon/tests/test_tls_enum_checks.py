@@ -6,7 +6,7 @@ nothing weak. The check fired on the list being non-empty, so any server tlsx
 could enumerate at all was reported as supporting weak ciphers.
 
 Every fixture below is the literal shape captured from tlsx run against
-testing/guinea_pigs/tls_target, not a guess. That matters: the previous
+a TLS lab, not a guess. That matters: the previous
 generation of this bug in the codebase was a reader looking at a key nothing
 wrote.
 

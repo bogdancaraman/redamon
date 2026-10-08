@@ -14,8 +14,8 @@
 #   is_private). A target on 127.0.0.1 therefore yields ZERO downloaded JS,
 #   ZERO source maps, and an empty harvest.
 #
-#   ai_surface_target gets away with network_mode: host because port_scan and
-#   http_probe are Go binaries that never see this Python guard.
+#   A target only port_scan and http_probe read could use network_mode: host:
+#   they are Go binaries that never see this Python guard.
 #
 #   192.88.99.0/24 is the deprecated 6to4 relay anycast prefix (RFC 7526).
 #   Python's ipaddress reports it as global/non-private, so the guard passes

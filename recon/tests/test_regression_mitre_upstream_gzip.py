@@ -2,7 +2,7 @@
 not re-requested on every scan.
 
 Found by the fix-regression end-to-end run (testing/guinea_pigs/
-fix_regression_target): every year download 404'd. Upstream CVE2CAPEC now
+recon fix-regression lab): every year download 404'd. Upstream CVE2CAPEC now
 publishes each year as database/CVE-<year>.jsonl.gz and no longer serves the
 plain .jsonl, so no year could be fetched or refreshed. And because a missing
 year is fetched even within the TTL, the same 404s repeated on every scan.

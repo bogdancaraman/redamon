@@ -121,24 +121,6 @@ web-cache-poisoning:
     - type: cache_control_missing
       grade: 1
 
-ai_surface_target:
-  description: >
-    The LLM/MCP attack surface. An unauthenticated MCP endpoint exposing tools
-    is the finding that must rank; a detected model name is a fingerprint.
-  findings:
-    - type: mcp_no_auth
-      grade: 3
-      note: an unauthenticated MCP server with callable tools
-    - type: prompt_injection
-      grade: 2
-    - type: model_detected
-      grade: 0
-
-# A synthetic project that mirrors the SHAPE of the live dev graph rather than
-# any single guinea pig: overwhelmingly OSV, plus a large block of GitHub
-# "secrets" that are private IP addresses. Under the old points formula every
-# one of those private IPs scored ~500 and sat at the top of the board, which is
-# the single most visible symptom this plan fixes.
 synthetic_dev_shape:
   description: >
     Fixture-only (no container). Built by

@@ -2,7 +2,7 @@
 
 JS recon no longer writes an Endpoint for a host outside the scan scope, so the
 external-domain aggregate is the only place those hosts are recorded. The shapes
-below are the ones a real IP-mode run against testing/guinea_pigs/js_scope_target
+below are the ones a real IP-mode run against a JS-scope lab
 produced.
 """
 import os

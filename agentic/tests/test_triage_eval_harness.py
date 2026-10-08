@@ -146,7 +146,7 @@ class TestTruthFile(unittest.TestCase):
     def test_it_parses_and_has_every_guinea_pig_the_plan_names(self):
         for name in ("apache_2.4.49", "apache_2.4.25", "dvws-node",
                      "supply_chain_target", "web-cache-poisoning",
-                     "ai_surface_target", "synthetic_dev_shape"):
+                     "synthetic_dev_shape"):
             self.assertIn(name, self.truth)
 
     def test_every_entry_has_a_known_key_and_an_integer_grade(self):

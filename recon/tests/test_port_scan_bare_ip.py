@@ -11,7 +11,7 @@ Everything keyed on a port then had nothing to attach to: Service creation, the
 IANA service label, tlsx's `tls_service_hint`, and the partial-recon input list
 that reads Port nodes out of the graph.
 
-Found by running the real pipeline against testing/guinea_pigs/tls_target, whose
+Found by running the real pipeline against a TLS lab, whose
 192.88.98.10 has no PTR record on purpose.
 
 Run: python -m pytest recon/tests/test_port_scan_bare_ip.py

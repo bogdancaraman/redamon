@@ -5,7 +5,7 @@ an IP literal, which no normal certificate names, so tlsx reports
 ``mismatched: true`` for EVERY correctly configured TLS host. The parser trusted
 that flag, so an IP-mode scan raised `tls_hostname_mismatch` on every TLS port
 it found: 2 of the 5 findings in the first live run against
-testing/guinea_pigs/tls_target were this, on certificates perfectly consistent
+a TLS lab were this, on certificates perfectly consistent
 with their own hostnames.
 
 The parser already documented the right rule ("only meaningful when we

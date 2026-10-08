@@ -59,7 +59,7 @@ def _tlsx_payload():
 
 
 def _recon_no_http():
-    """What the tls_target lab actually produces: certs, and httpx found nothing."""
+    """What a TLS-only lab actually produces: certs, and httpx found nothing."""
     return {
         "metadata": {},
         "tlsx": {"by_target": _tlsx_payload()},

@@ -14,8 +14,7 @@ Every expectation in [expected_results.yaml](expected_results.yaml) was
 
 ## Why this target is NOT on 127.0.0.1
 
-Unlike [`ai_surface_target`](../ai_surface_target/), this guinea pig sits on
-`192.88.99.10`, on its own docker bridge.
+This guinea pig sits on `192.88.99.10`, on its own docker bridge.
 
 L2's harvest is fed by `js_recon`, which is **Python** and routes every JS URL
 and every source-map URL through `is_url_safe_to_probe()`
@@ -23,8 +22,8 @@ and every source-map URL through `is_url_safe_to_probe()`
 fails closed on any non-routable address. A loopback target yields zero
 downloaded JS, zero source maps, and an empty harvest.
 
-`ai_surface_target` gets away with `network_mode: host` because `port_scan` and
-`http_probe` are Go binaries that never see this Python guard.
+A target that only `port_scan` and `http_probe` read could sit on the host network:
+they are Go binaries that never see this Python guard.
 
 Every documentation range is rejected too — Python's `ipaddress` reports
 `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` and `198.18.0.0/15` as
